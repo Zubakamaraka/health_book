@@ -264,6 +264,166 @@ export function promptDialog({title, label, value="", placeholder="", okText="С
   });
 }
 
+/* ===================================================================
+   Календарь — свой, а не браузерный.
+   Почему не <input type="date">: он показывает дату в формате системы
+   (может быть «09/14/2026»), по-разному открывается в разных браузерах
+   и мелкий. Здесь крупная сетка, выбор месяца и года отдельными
+   кнопками и кнопка «Сегодня».
+   =================================================================== */
+const MONTHS_SHORT = ["Янв","Фев","Мар","Апр","Май","Июн","Июл","Авг","Сен","Окт","Ноя","Дек"];
+
+export function pickDate(opts={}){
+  return new Promise(resolve => {
+    const today = todayISO();
+    let cur = parseISO(opts.value) || parseISO(today);
+    let selected = opts.value || null;
+    let view = new Date(cur.getFullYear(), cur.getMonth(), 1);
+    let mode = "days";           // days | months | years
+
+    const min = opts.min ? parseISO(opts.min) : null;
+    const max = opts.max ? parseISO(opts.max) : null;
+
+    const back = document.createElement("div");
+    back.className = "modal-back";
+    back.innerHTML = `<div class="modal cal" role="dialog" aria-modal="true"></div>`;
+    const box = back.querySelector(".modal");
+
+    const close = v => { back.remove(); document.removeEventListener("keydown", onKey); resolve(v); };
+    const onKey = e => { if(e.key === "Escape") close(null); };
+
+    function disabled(d){
+      if(min && d < min) return true;
+      if(max && d > max) return true;
+      return false;
+    }
+
+    function draw(){
+      const y = view.getFullYear(), m = view.getMonth();
+      let body = "";
+
+      if(mode === "days"){
+        const first = new Date(y, m, 1);
+        const shift = (first.getDay() + 6) % 7;          // неделя с понедельника
+        const daysIn = new Date(y, m+1, 0).getDate();
+        let cells = "";
+        for(let i=0;i<shift;i++) cells += `<span class="cal-cell empty"></span>`;
+        for(let dd=1; dd<=daysIn; dd++){
+          const dt = new Date(y, m, dd);
+          const iso = isoOf(dt);
+          const cls = [
+            "cal-cell",
+            iso === selected ? "sel" : "",
+            iso === today ? "today" : "",
+            (dt.getDay() === 0 || dt.getDay() === 6) ? "we" : "",
+            disabled(dt) ? "off" : ""
+          ].filter(Boolean).join(" ");
+          cells += `<button type="button" class="${cls}" ${disabled(dt)?"disabled":""} data-day="${iso}">${dd}</button>`;
+        }
+        body = `<div class="cal-wd">${["Пн","Вт","Ср","Чт","Пт","Сб","Вс"].map(w=>`<span>${w}</span>`).join("")}</div>
+                <div class="cal-grid">${cells}</div>`;
+      }
+
+      if(mode === "months"){
+        body = `<div class="cal-grid months">${MONTHS_SHORT.map((n,i) =>
+          `<button type="button" class="cal-cell wide ${i===m?"sel":""}" data-month="${i}">${n}</button>`).join("")}</div>`;
+      }
+
+      if(mode === "years"){
+        const start = y - 7;
+        let cells = "";
+        for(let i=0;i<16;i++){
+          const yy = start + i;
+          cells += `<button type="button" class="cal-cell wide ${yy===y?"sel":""}" data-year="${yy}">${yy}</button>`;
+        }
+        body = `<div class="cal-grid years">${cells}</div>`;
+      }
+
+      box.innerHTML = `
+        <div class="cal-head">
+          <button type="button" class="cal-nav" data-prev aria-label="Назад">‹</button>
+          <button type="button" class="cal-title" data-mode="months">${MONTHS_SHORT[m]}</button>
+          <button type="button" class="cal-title" data-mode="years">${y}</button>
+          <button type="button" class="cal-nav" data-next aria-label="Вперёд">›</button>
+        </div>
+        ${body}
+        <div class="btn-row mt">
+          <button type="button" class="btn" data-cancel>Отмена</button>
+          <button type="button" class="btn primary" data-today>Сегодня</button>
+        </div>`;
+    }
+
+    box.addEventListener("click", e => {
+      const t = e.target;
+      if(t.closest("[data-cancel]")) return close(null);
+      if(t.closest("[data-today]")){
+        const d = parseISO(today);
+        if(!disabled(d)) return close(today);
+        return;
+      }
+      const day = t.closest("[data-day]");
+      if(day) return close(day.dataset.day);
+
+      const md = t.closest("[data-mode]");
+      if(md){ mode = (mode === md.dataset.mode) ? "days" : md.dataset.mode; return draw(); }
+
+      const mo = t.closest("[data-month]");
+      if(mo){ view = new Date(view.getFullYear(), Number(mo.dataset.month), 1); mode = "days"; return draw(); }
+
+      const yr = t.closest("[data-year]");
+      if(yr){ view = new Date(Number(yr.dataset.year), view.getMonth(), 1); mode = "months"; return draw(); }
+
+      if(t.closest("[data-prev]") || t.closest("[data-next]")){
+        const k = t.closest("[data-prev]") ? -1 : 1;
+        if(mode === "days")   view = new Date(view.getFullYear(), view.getMonth() + k, 1);
+        if(mode === "months") view = new Date(view.getFullYear() + k, view.getMonth(), 1);
+        if(mode === "years")  view = new Date(view.getFullYear() + k*16, view.getMonth(), 1);
+        return draw();
+      }
+    });
+    back.addEventListener("click", e => { if(e.target === back) close(null); });
+    document.addEventListener("keydown", onKey);
+    document.body.appendChild(back);
+    draw();
+  });
+}
+
+/* Поле-кнопка с датой вместо <input type="date"> */
+export function dateFieldHTML(id, iso, {label, sub, required, empty="не указано"} = {}){
+  return `<div class="field">
+    ${label ? `<span class="field-label">${esc(label)}${required ? ` <span class="req">*</span>` : ""}</span>` : ""}
+    ${sub ? `<div class="sub">${esc(sub)}</div>` : ""}
+    <button type="button" class="datefield" id="${id}" data-iso="${esc(iso || "")}">
+      <span class="ic" aria-hidden="true">📅</span>
+      <span class="tx">${iso ? esc(fmtDate(iso)) : esc(empty)}</span>
+    </button>
+  </div>`;
+}
+
+/* Навешивает календарь на поле-кнопку, созданное dateFieldHTML */
+export function bindDateField(root, id, opts={}){
+  const el = typeof id === "string" ? $("#" + id, root) : id;
+  if(!el) return null;
+  el.addEventListener("click", async () => {
+    const v = await pickDate({ value: el.dataset.iso || todayISO(), min: opts.min, max: opts.max });
+    if(v === null) return;
+    el.dataset.iso = v;
+    el.querySelector(".tx").textContent = fmtDate(v);
+    if(opts.onChange) opts.onChange(v);
+  });
+  return {
+    get: () => el.dataset.iso || "",
+    set: v => {
+      el.dataset.iso = v || "";
+      el.querySelector(".tx").textContent = v ? fmtDate(v) : (opts.empty || "не указано");
+    },
+    clear: () => {
+      el.dataset.iso = "";
+      el.querySelector(".tx").textContent = opts.empty || "не указано";
+    }
+  };
+}
+
 /* ---------- Степпер: крупный ввод чисел без клавиатуры ---------- */
 export function stepper(opts){
   /* opts: {value, min, max, step, unit, decimals, presets:[], onChange} */

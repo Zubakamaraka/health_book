@@ -5,8 +5,9 @@
 import { state, save, uid, photoPut, photoGet, photoDel, compressImage } from "./store.js";
 import { $, $$, esc, go, back, toast, formHead, addFab, confirmDialog,
          profileSwitch, todayISO, shiftISO, fmtDayHeader, fmtDate, fmtDateShort,
-         daysBetween, plural, pickImage, viewPhoto, queryParams, render } from "./ui.js";
-import { searchItems, getItem, itemSubtitle } from "./library.js";
+         daysBetween, plural, pickImage, viewPhoto, queryParams, render,
+         pickDate, dateFieldHTML, bindDateField } from "./ui.js";
+import { searchItems, getItem, itemSubtitle, hl } from "./library.js";
 
 /* Времена приёма */
 export const TIMES = [
@@ -83,7 +84,8 @@ export function screenHome(root){
 
     <div class="mnav" style="display:flex;align-items:center;gap:.6rem;margin:.2rem 0 .9rem">
       <button class="hbtn" id="dayPrev" aria-label="Предыдущий день" style="min-width:3rem;min-height:3rem;font-size:1.3rem">‹</button>
-      <div style="flex:1;text-align:center;font-family:Georgia,serif;font-weight:700;font-size:1.1rem">${esc(fmtDayHeader(viewDay))}</div>
+      <button class="hbtn" id="dayPick" style="flex:1;min-height:3rem;font-family:Georgia,serif;font-size:1.05rem;border-color:var(--line)"
+              aria-label="Выбрать дату в календаре">📅 ${esc(fmtDayHeader(viewDay))}</button>
       <button class="hbtn" id="dayNext" aria-label="Следующий день" ${isToday ? "disabled" : ""} style="min-width:3rem;min-height:3rem;font-size:1.3rem">›</button>
     </div>
     ${!isToday ? `<div class="center mb"><button class="btn quiet" id="dayToday">Вернуться к сегодня</button></div>` : ""}
@@ -103,6 +105,10 @@ export function screenHome(root){
   `;
 
   $("#dayPrev", root).addEventListener("click", () => { viewDay = shiftISO(viewDay, -1); render(); });
+  $("#dayPick", root).addEventListener("click", async () => {
+    const v = await pickDate({ value: viewDay, max: todayISO() });
+    if(v){ viewDay = v; render(); }
+  });
   const nx = $("#dayNext", root);
   if(!nx.disabled) nx.addEventListener("click", () => { viewDay = shiftISO(viewDay, 1); render(); });
   const td = $("#dayToday", root);
@@ -196,7 +202,13 @@ export function screenCourse(root, params){
       <h2>Из библиотеки</h2>
       <p><b>${esc(lib.name)}</b>${itemSubtitle(lib) ? `<br><span class="hint">${esc(itemSubtitle(lib))}</span>` : ""}</p>
       <div class="mt"><button class="btn wide" id="openLib">Открыть карточку в библиотеке</button></div>
-    </div>` : ""}
+    </div>` : `<div class="panel">
+      <h2>Нет в библиотеке</h2>
+      <p class="hint">Это назначение записано просто по названию — и так тоже можно.
+         Если завести карточку, в следующий раз название подставится само,
+         а сведения о препарате будут под рукой.</p>
+      <div class="mt"><button class="btn wide" id="makeLib">＋ Завести карточку в библиотеке</button></div>
+    </div>`}
 
     <div class="panel">
       <h2>Фотографии</h2>
@@ -223,6 +235,11 @@ export function screenCourse(root, params){
 
   const ol = $("#openLib", root);
   if(ol) ol.addEventListener("click", () => go("/library/item/" + encodeURIComponent(c.libId)));
+
+  const ml = $("#makeLib", root);
+  if(ml) ml.addEventListener("click", () => {
+    go("/library/new?name=" + encodeURIComponent(c.name) + "&link=" + encodeURIComponent(c.id));
+  });
 
   $("#editBtn", root).addEventListener("click", () => go("/home/course/edit/" + encodeURIComponent(c.id)));
 
@@ -334,6 +351,11 @@ export function screenArchive(root){
 
 /* ===================================================================
    Экран: форма назначения
+
+   Форма разбита на шаги, потому что главная сложность для пожилого
+   человека — не поля, а непонимание, что список под поиском нужно
+   нажать. Поэтому: явный «Шаг 1», строки результатов с плюсом,
+   а после выбора — зелёная карточка «выбрано» и автозаполнение дозы.
    =================================================================== */
 export function screenCourseForm(root, params){
   const editing = !!params.id;
@@ -361,83 +383,97 @@ export function screenCourseForm(root, params){
     <form id="cForm" novalidate>
 
       ${editing ? "" : `
-      <div class="panel flat">
-        <h2>Что назначено</h2>
-        <div class="searchbar">
-          <span class="si" aria-hidden="true">🔎</span>
-          <input type="search" id="pickSearch" placeholder="Найти в библиотеке" autocomplete="off">
+      <div class="step" id="step1">
+        <div class="sh"><span class="n">1</span><span class="t">Что назначено</span></div>
+
+        <div id="pickedBox"></div>
+
+        <div id="pickArea">
+          <div class="searchbar" style="margin-bottom:.5rem">
+            <span class="si" aria-hidden="true">🔎</span>
+            <input type="search" id="pickSearch" placeholder="Начните вводить: амос, кетон, давление…"
+                   autocomplete="off" enterkeyhint="search">
+          </div>
+          <p class="hint">Нажмите на найденную строку — название и дозировки подставятся сами.
+             <b>Если такого нет в библиотеке — ничего страшного:</b> впишите название
+             в поле «Название» ниже и сохраняйте. Заводить карточку в библиотеке не обязательно.</p>
+          <div id="pickResults"></div>
         </div>
-        <div id="pickResults"></div>
-        <p class="hint">Не нашли? Просто впишите название ниже — оно сохранится как своё.</p>
       </div>`}
 
-      <div class="field">
-        <label for="cName">Название <span class="req">*</span></label>
-        <input type="text" id="cName" value="${esc(v.name)}" required placeholder="Например: Эналаприл">
-        <div id="libLink" class="hint" style="margin-top:.3rem">${
-          v.libId ? "Связано с библиотекой" : ""
-        }</div>
-      </div>
+      <div class="step">
+        <div class="sh"><span class="n">${editing ? "•" : "2"}</span><span class="t">Название и доза</span></div>
 
-      <div class="field">
-        <span class="field-label">Тип</span>
-        <div class="chips" id="cKind">
-          <button type="button" class="chip ${v.kind==="drug"?"on":""}" data-k="drug">💊 Лекарство</button>
-          <button type="button" class="chip ${v.kind==="procedure"?"on":""}" data-k="procedure">🩺 Процедура</button>
-        </div>
-      </div>
-
-      <div class="field">
-        <label for="cDose">Доза и как принимать</label>
-        <div class="sub">Например: 1 таблетка 10 мг, после еды</div>
-        <input type="text" id="cDose" value="${esc(v.dose)}">
-        <div class="presets mt" id="dosePresets"></div>
-      </div>
-
-      <div class="field">
-        <span class="field-label">Когда принимать <span class="req">*</span></span>
-        <div class="chips" id="cTimes">
-          ${TIMES.map(t => `<button type="button" class="chip ${v.times.includes(t.id)?"on":""}"
-            data-t="${t.id}" aria-pressed="${v.times.includes(t.id)}">${t.icon} ${esc(t.name)}</button>`).join("")}
-        </div>
-      </div>
-
-      <div class="field">
-        <span class="field-label">Как часто</span>
-        <div class="chips" id="cFreq">
-          <button type="button" class="chip ${v.everyN===1?"on":""}" data-n="1">Каждый день</button>
-          <button type="button" class="chip ${v.everyN===2?"on":""}" data-n="2">Через день</button>
-          <button type="button" class="chip ${v.everyN===3?"on":""}" data-n="3">Раз в 3 дня</button>
-          <button type="button" class="chip ${v.everyN===7?"on":""}" data-n="7">Раз в неделю</button>
-        </div>
-      </div>
-
-      <div class="row2">
         <div class="field">
-          <label for="cStart">Дата назначения <span class="req">*</span></label>
-          <input type="date" id="cStart" value="${esc(v.startDate)}" required>
+          <label for="cName">Название <span class="req">*</span></label>
+          <input type="text" id="cName" value="${esc(v.name)}" required placeholder="Например: Амосин">
+          <div id="libLink" class="hint" style="margin-top:.3rem">${
+            v.libId ? "Связано с библиотекой" : ""
+          }</div>
         </div>
+
         <div class="field">
-          <label for="cEnd">До какой даты</label>
-          <div class="sub">Можно не указывать</div>
-          <input type="date" id="cEnd" value="${esc(v.endDate)}">
+          <span class="field-label">Тип</span>
+          <div class="chips" id="cKind">
+            <button type="button" class="chip ${v.kind==="drug"?"on":""}" data-k="drug">💊 Лекарство</button>
+            <button type="button" class="chip ${v.kind==="procedure"?"on":""}" data-k="procedure">🩺 Процедура</button>
+          </div>
+        </div>
+
+        <div class="field">
+          <label for="cDose">Доза и как принимать</label>
+          <div class="sub">Например: 1 таблетка 500 мг, после еды</div>
+          <input type="text" id="cDose" value="${esc(v.dose)}">
+          <div class="presets mt" id="dosePresets"></div>
         </div>
       </div>
 
-      <div class="field">
-        <label for="cReason">Для чего назначено <span class="req">*</span></label>
-        <div class="sub">Своими словами — так, как объяснил врач.</div>
-        <textarea id="cReason" required placeholder="Например: для снижения давления">${esc(v.reason)}</textarea>
+      <div class="step">
+        <div class="sh"><span class="n">${editing ? "•" : "3"}</span><span class="t">Когда и как долго</span></div>
+
+        <div class="field">
+          <span class="field-label">Когда принимать <span class="req">*</span></span>
+          <div class="chips" id="cTimes">
+            ${TIMES.map(t => `<button type="button" class="chip ${v.times.includes(t.id)?"on":""}"
+              data-t="${t.id}" aria-pressed="${v.times.includes(t.id)}">${t.icon} ${esc(t.name)}</button>`).join("")}
+          </div>
+        </div>
+
+        <div class="field">
+          <span class="field-label">Как часто</span>
+          <div class="chips" id="cFreq">
+            <button type="button" class="chip ${v.everyN===1?"on":""}" data-n="1">Каждый день</button>
+            <button type="button" class="chip ${v.everyN===2?"on":""}" data-n="2">Через день</button>
+            <button type="button" class="chip ${v.everyN===3?"on":""}" data-n="3">Раз в 3 дня</button>
+            <button type="button" class="chip ${v.everyN===7?"on":""}" data-n="7">Раз в неделю</button>
+          </div>
+        </div>
+
+        ${dateFieldHTML("cStart", v.startDate, {label:"Дата назначения", required:true})}
+        ${dateFieldHTML("cEnd", v.endDate, {label:"До какой даты", sub:"Можно не указывать", empty:"не ограничено"})}
+        <div class="btn-row" style="margin-top:-.4rem">
+          <button type="button" class="btn quiet" id="cEndClear" style="min-height:2.5rem">Убрать дату окончания</button>
+        </div>
       </div>
 
-      <div class="field">
-        <label for="cDoctor">Кто назначил</label>
-        <input type="text" id="cDoctor" value="${esc(v.doctor)}" placeholder="Терапевт, кардиолог, фамилия…">
-      </div>
+      <div class="step">
+        <div class="sh"><span class="n">${editing ? "•" : "4"}</span><span class="t">Для чего и кто назначил</span></div>
 
-      <div class="field">
-        <label for="cNotes">Примечания</label>
-        <textarea id="cNotes">${esc(v.notes)}</textarea>
+        <div class="field">
+          <label for="cReason">Для чего назначено <span class="req">*</span></label>
+          <div class="sub">Своими словами — так, как объяснил врач.</div>
+          <textarea id="cReason" required placeholder="Например: от воспаления, по назначению терапевта">${esc(v.reason)}</textarea>
+        </div>
+
+        <div class="field">
+          <label for="cDoctor">Кто назначил</label>
+          <input type="text" id="cDoctor" value="${esc(v.doctor)}" placeholder="Терапевт, кардиолог, фамилия…">
+        </div>
+
+        <div class="field">
+          <label for="cNotes">Примечания</label>
+          <textarea id="cNotes">${esc(v.notes)}</textarea>
+        </div>
       </div>
 
       <div class="sticky-actions">
@@ -449,7 +485,73 @@ export function screenCourseForm(root, params){
     </form>
   `;
 
+  /* --- даты через календарь --- */
+  const startF = bindDateField(root, "cStart");
+  const endF   = bindDateField(root, "cEnd", {empty:"не ограничено"});
+  $("#cEndClear", root).addEventListener("click", () => { endF.clear(); toast("Дата окончания убрана"); });
+
   /* --- выбор из библиотеки --- */
+  function showPicked(it, shownName){
+    const pb = $("#pickedBox", root);
+    const pa = $("#pickArea", root);
+    if(!pb) return;
+    if(!it){ pb.innerHTML = ""; if(pa) pa.hidden = false; return; }
+    const title = shownName || it.name;
+    const sub = [title !== it.name ? "= " + it.name : "", itemSubtitle(it)].filter(Boolean).join(" · ");
+    pb.innerHTML = `<div class="picked">
+        <span class="pi" aria-hidden="true">✅</span>
+        <span class="pt"><b>${esc(title)}</b>
+          ${sub ? `<span class="s">${esc(sub)}</span>` : ""}</span>
+      </div>
+      <div class="btn-row mt">
+        <button type="button" class="btn quiet" id="pickAgain" style="min-height:2.6rem">Выбрать другое</button>
+        <button type="button" class="btn quiet" id="pickOpen" style="min-height:2.6rem">Открыть карточку</button>
+      </div>`;
+    if(pa) pa.hidden = true;
+    $("#pickAgain", root).addEventListener("click", () => {
+      v.libId = null;
+      $("#libLink", root).textContent = "";
+      showPicked(null);
+      const inp = $("#pickSearch", root);
+      if(inp){ inp.value = ""; inp.focus(); }
+      const box = $("#pickResults", root); if(box) box.innerHTML = "";
+    });
+    $("#pickOpen", root).addEventListener("click", () => go("/library/item/" + encodeURIComponent(it.id)));
+  }
+
+  function applyPick(it, typedTitle){
+    // В название подставляем ровно то, что человек нашёл: если он искал
+    // «Амосин», в назначении и в списке покупок должен быть «Амосин»,
+    // а связь с библиотекой всё равно ведёт на амоксициллин.
+    v.libId = it.id; v.kind = it.kind;
+    const shown = typedTitle && typedTitle !== it.name ? typedTitle : it.name;
+    $("#cName", root).value = shown;
+    $("#libLink", root).textContent = shown === it.name
+      ? "Связано с библиотекой"
+      : "Связано с библиотекой: " + it.name;
+    root.querySelectorAll("#cKind .chip").forEach(c => c.classList.toggle("on", c.dataset.k === v.kind));
+    fillDosePresets(it);
+    // Автоподстановка дозы: если поле пустое, подставляем первую дозировку
+    const dose = $("#cDose", root);
+    if(!dose.value.trim()){
+      const unit = (it.forms && it.forms[0]) || "";
+      const d = (it.doses && it.doses[0]) || "";
+      if(d || unit){
+        const word = /табл/.test(unit) ? "1 таблетка" :
+                     /капсул/.test(unit) ? "1 капсула" :
+                     /пакет|порош/.test(unit) ? "1 пакетик" :
+                     /спрей|капл/.test(unit) ? "" : "";
+        dose.value = [word, d].filter(Boolean).join(" ") || unit;
+      }
+    }
+    if(it.kind === "procedure"){
+      const s = $("#step1", root);
+      if(s) s.classList.add("done");
+    }
+    showPicked(it, shown);
+    toast("Выбрано: " + shown);
+  }
+
   const pick = $("#pickSearch", root);
   if(pick){
     let t = null;
@@ -460,22 +562,44 @@ export function screenCourseForm(root, params){
         const qq = pick.value.trim();
         if(qq.length < 2){ box.innerHTML = ""; return; }
         const found = searchItems(qq).slice(0, 8);
-        if(!found.length){ box.innerHTML = `<p class="hint mt">В библиотеке не нашлось.</p>`; return; }
-        box.innerHTML = `<div class="list mt">${found.map(i => `
-          <button class="item" type="button" data-pick="${esc(i.id)}">
-            <div class="top"><span class="nm">${esc(i.name)}</span></div>
-            ${itemSubtitle(i) ? `<div class="sub">${esc(itemSubtitle(i))}</div>` : ""}
-          </button>`).join("")}</div>`;
-        box.querySelectorAll("[data-pick]").forEach(b => {
-          b.addEventListener("click", () => {
-            const it = getItem(b.dataset.pick);
-            v.libId = it.id; v.kind = it.kind;
-            $("#cName", root).value = it.name;
-            $("#libLink", root).textContent = "Связано с библиотекой: " + it.name;
-            root.querySelectorAll("#cKind .chip").forEach(c => c.classList.toggle("on", c.dataset.k === v.kind));
+        if(!found.length){
+          box.innerHTML = `<p class="hint mt">В библиотеке такого нет — и это нормально.</p>
+            <div class="btn-col mt">
+              <button type="button" class="btn primary wide" id="useTyped">Записать «${esc(qq)}» как есть</button>
+              <button type="button" class="btn wide" id="toLib">＋ Завести «${esc(qq)}» в библиотеке</button>
+            </div>
+            <p class="hint mt">«Как есть» — самый быстрый путь: название попадёт в назначение,
+               библиотеку заполнять не обязательно.</p>`;
+          $("#useTyped", root).addEventListener("click", () => {
+            $("#cName", root).value = qq;
+            v.libId = null;
+            $("#libLink", root).textContent = "Записано как своё название";
             box.innerHTML = ""; pick.value = "";
-            fillDosePresets(it);
-            toast("Выбрано: " + it.name);
+            toast("Название записано");
+            $("#cDose", root).focus();
+          });
+          $("#toLib", root).addEventListener("click", () => {
+            go("/library/new?name=" + encodeURIComponent(qq) + "&then=course");
+          });
+          return;
+        }
+        box.innerHTML =
+          (found[0].fuzzy ? `<p class="hint mt">Точного совпадения нет, возможно вы искали:</p>` : "") +
+          `<div class="btn-col mt">${found.map(r => `
+            <button class="pickrow" type="button" data-pick="${esc(r.item.id)}">
+              <span class="plus" aria-hidden="true">＋</span>
+              <span class="pb">
+                <span class="n">${hl(r.title, r.q)}</span>
+                ${r.alias || itemSubtitle(r.item)
+                  ? `<span class="s">${esc([r.alias ? "= " + r.item.name : "", itemSubtitle(r.item)].filter(Boolean).join(" · "))}</span>`
+                  : ""}
+              </span>
+            </button>`).join("")}</div>`;
+        box.querySelectorAll("[data-pick]").forEach((b, idx) => {
+          const r = found[idx];
+          b.addEventListener("click", () => {
+            applyPick(getItem(b.dataset.pick), r.title);
+            box.innerHTML = ""; pick.value = "";
           });
         });
       }, 180);
@@ -487,17 +611,23 @@ export function screenCourseForm(root, params){
     if(!box) return;
     const doses = (it && it.doses) || [];
     if(!doses.length){ box.innerHTML = ""; return; }
-    box.innerHTML = doses.slice(0,8).map(d =>
-      `<button type="button" class="p" data-dp="${esc(d)}">${esc(d)}</button>`).join("");
+    const unit = (it.forms && it.forms[0]) || "";
+    const word = /табл/.test(unit) ? "1 таблетка" : /капсул/.test(unit) ? "1 капсула" : "";
+    box.innerHTML = `<span class="hint" style="width:100%">Подставить дозировку:</span>` +
+      doses.slice(0,8).map(d => `<button type="button" class="p" data-dp="${esc(d)}">${esc(d)}</button>`).join("");
     box.querySelectorAll("[data-dp]").forEach(b => {
       b.addEventListener("click", () => {
         const inp = $("#cDose", root);
-        inp.value = inp.value ? inp.value : ("1 таблетка " + b.dataset.dp);
+        inp.value = [word, b.dataset.dp].filter(Boolean).join(" ");
         inp.focus();
       });
     });
   }
-  fillDosePresets(v.libId ? getItem(v.libId) : null);
+
+  if(v.libId){
+    const it = getItem(v.libId);
+    if(it){ fillDosePresets(it); if(!editing) showPicked(it); }
+  }
 
   /* --- переключатели --- */
   root.querySelector("#cKind").addEventListener("click", e => {
@@ -526,12 +656,15 @@ export function screenCourseForm(root, params){
     e.preventDefault();
     const name = $("#cName", root).value.trim();
     const reason = $("#cReason", root).value.trim();
-    const startDate = $("#cStart", root).value;
+    const startDate = startF.get();
 
     if(!name){ toast("Впишите название"); $("#cName", root).focus(); return; }
     if(!v.times.length){ toast("Отметьте, когда принимать"); return; }
-    if(!startDate){ toast("Укажите дату назначения"); $("#cStart", root).focus(); return; }
+    if(!startDate){ toast("Укажите дату назначения"); return; }
     if(!reason){ toast("Напишите, для чего назначено"); $("#cReason", root).focus(); return; }
+
+    const endDate = endF.get() || null;
+    if(endDate && endDate < startDate){ toast("Дата окончания раньше даты назначения"); return; }
 
     const payload = {
       libId: v.libId || null,
@@ -541,7 +674,7 @@ export function screenCourseForm(root, params){
       times: v.times.slice(),
       everyN: v.everyN,
       startDate,
-      endDate: $("#cEnd", root).value || null,
+      endDate,
       reason,
       doctor: $("#cDoctor", root).value.trim(),
       notes: $("#cNotes", root).value.trim()

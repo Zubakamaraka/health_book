@@ -3,19 +3,22 @@
 
    Что здесь важно понимать про данные:
    • Встроенный словарь (data/library.json) содержит только ФАКТЫ:
-     название, действующее вещество, группу, формы выпуска, дозировки.
-     Это не инструкция по применению и не рекомендация.
-   • Поле «От чего назначено» заполняет сам пользователь.
+     название, действующее вещество, группу, формы выпуска, дозировки
+     и торговые названия. Это не инструкция и не рекомендация.
+   • Поле «От чего помогает» заполняет сам пользователь.
    • Справка из Википедии подгружается ТОЛЬКО по нажатию кнопки и только
-     при наличии интернета. Она сохраняется на устройстве и дальше
-     доступна офлайн. Источник всегда подписан.
+     при наличии интернета. Сохраняется на устройстве, источник подписан.
    • Поиск в аптеках открывает обычный поиск в браузере. Приложение
-     никаких сайтов не разбирает: браузер запрещает странице читать
-     содержимое чужих сайтов, а сами аптечные сайты закрыты защитой.
+     никаких сайтов не разбирает.
+
+   Поиск устроен так, чтобы человек искал так, как говорит вслух:
+   ищется и по действующему веществу, и по торговому названию, и
+   показывается ровно то название, которое нашлось. Опечатки прощаются.
    =================================================================== */
 
 import { state, save, uid } from "./store.js";
-import { $, esc, go, back, toast, formHead, addFab, confirmDialog, render } from "./ui.js";
+import { $, esc, go, back, toast, formHead, addFab, confirmDialog, render,
+         queryParams } from "./ui.js";
 
 /* ---------- Загрузка встроенного словаря ---------- */
 let CATEGORIES = [];
@@ -42,8 +45,9 @@ export function allItems(){
   const hidden = new Set(d.libraryHidden || []);
   const builtin = state.builtinLibrary
     .filter(it => !hidden.has(it.id))
-    .map(it => Object.assign({}, it, d.libraryEdits[it.id] || {}, {builtin:true}));
-  const custom = (d.libraryCustom || []).map(it => Object.assign({}, it, {builtin:false}));
+    .map(it => Object.assign({}, it, d.libraryEdits[it.id] || {},
+                             {builtin:true, edited: !!d.libraryEdits[it.id]}));
+  const custom = (d.libraryCustom || []).map(it => Object.assign({}, it, {builtin:false, edited:false}));
   return builtin.concat(custom);
 }
 
@@ -52,44 +56,143 @@ export function getItem(id){
   return allItems().find(it => it.id === id) || null;
 }
 
-/* ---------- Поиск ---------- */
-function norm(s){
-  return String(s||"").toLowerCase().replace(/ё/g,"е").replace(/[^a-zа-я0-9]+/gi," ").trim();
+/* ===================================================================
+   Поиск
+   =================================================================== */
+
+/* Мягкая нормализация с сохранением длины — годится и для подсветки */
+function soft(s){ return String(s||"").toLowerCase().replace(/ё/g,"е"); }
+
+/* Согласный «скелет» слова: лекарства чаще всего путают в гласных.
+   «Кетанал» и «Кетонал» дают «ктнл»; «розвостотин» и «розувастатин» — «рзвсттн». */
+function skel(s){
+  return soft(s).replace(/[^a-zа-я]/g, "").replace(/[аеиоуыэюяйьъ]/g, "");
 }
-export function searchItems(query, opts={}){
+
+/* Расстояние Левенштейна с ограничением сверху */
+function lev(a, b, limit){
+  if(a === b) return 0;
+  const n = a.length, m = b.length;
+  if(Math.abs(n - m) > limit) return limit + 1;
+  let prev = new Array(m + 1);
+  let cur  = new Array(m + 1);
+  for(let j = 0; j <= m; j++) prev[j] = j;
+  for(let i = 1; i <= n; i++){
+    cur[0] = i;
+    let rowMin = cur[0];
+    for(let j = 1; j <= m; j++){
+      const cost = a.charCodeAt(i-1) === b.charCodeAt(j-1) ? 0 : 1;
+      cur[j] = Math.min(cur[j-1] + 1, prev[j] + 1, prev[j-1] + cost);
+      if(cur[j] < rowMin) rowMin = cur[j];
+    }
+    if(rowMin > limit) return limit + 1;
+    const t = prev; prev = cur; cur = t;
+  }
+  return prev[m];
+}
+
+function wordStarts(s, q){
+  return s.split(/[^a-zа-я0-9]+/).some(w => w && w.startsWith(q));
+}
+
+function byName(a, b){ return String(a.name).localeCompare(String(b.name), "ru"); }
+
+/* Результат поиска:
+   { item, title, alias, q, fuzzy, score }
+   title — название, по которому нашлось (может быть торговым);
+   alias — true, если title отличается от основного названия позиции.  */
+export function searchItems(query, opts = {}){
   let list = allItems();
   if(opts.kind) list = list.filter(i => i.kind === opts.kind);
   if(opts.cat)  list = list.filter(i => i.cat === opts.cat);
+  if(opts.own)  list = list.filter(i => !i.builtin || i.edited);
+  if(opts.rx)   list = list.filter(i => !!i.rx);
 
-  const q = norm(query);
-  if(!q) return list.sort(byName);
-
-  const words = q.split(" ").filter(Boolean);
-  const scored = [];
-  for(const it of list){
-    const name = norm(it.name);
-    const inn  = norm(it.inn);
-    const brands = norm((it.brands||[]).join(" "));
-    const grp  = norm(it.group);
-    const hay = [name, inn, brands, grp].join(" ");
-    if(!words.every(w => hay.includes(w))) continue;
-
-    let score = 40;
-    if(name.startsWith(q)) score = 0;
-    else if(name.includes(q)) score = 10;
-    else if(brands.includes(q)) score = 15;
-    else if(inn.includes(q)) score = 20;
-    scored.push({it, score});
+  const q = soft(query).trim();
+  if(!q){
+    return list.sort(byName).map(it => ({item:it, title:it.name, alias:false, q:"", fuzzy:false, score:0}));
   }
-  scored.sort((a,b) => a.score - b.score || byName(a.it, b.it));
-  return scored.map(s => s.it);
-}
-function byName(a,b){ return String(a.name).localeCompare(String(b.name), "ru"); }
 
-/* ---------- Как называется позиция коротко ---------- */
+  const out = [];
+  for(const it of list){
+    const titles = [it.name].concat(it.brands || []);
+    let best = null;
+    for(const t of titles){
+      const s = soft(t);
+      let score = null;
+      if(s === q) score = 0;
+      else if(s.startsWith(q)) score = 10;
+      else if(wordStarts(s, q)) score = 20;
+      else if(s.includes(q)) score = 30;
+      if(score === null) continue;
+      if(t !== it.name) score += 1;         // при равенстве основное название чуть выше
+      if(best === null || score < best.score) best = {score, title:t};
+    }
+    if(!best){
+      const extra = soft([it.inn, it.group].filter(Boolean).join(" • "));
+      if(extra.includes(q)) best = {score:60, title:it.name};
+    }
+    if(best) out.push({item:it, title:best.title, alias:best.title !== it.name, q, fuzzy:false, score:best.score});
+  }
+
+  if(out.length){
+    out.sort((a,b) => a.score - b.score || byName(a.item, b.item));
+    return out;
+  }
+  return fuzzySearch(list, q);
+}
+
+/* Поиск с опечатками — включается, только когда точных совпадений нет */
+function fuzzySearch(list, q){
+  if(q.length < 3) return [];
+  const qs = skel(q);
+  const limit = q.length >= 8 ? 3 : q.length >= 5 ? 2 : 1;
+  const res = [];
+
+  for(const it of list){
+    const titles = [it.name].concat(it.brands || []);
+    let best = null;
+    for(const t of titles){
+      const s = soft(t), ss = skel(t);
+      let sc = null;
+      if(qs.length >= 3 && ss === qs) sc = 5;
+      else if(qs.length >= 4 && ss.startsWith(qs)) sc = 12;
+      else {
+        const d = Math.min(lev(q, s, limit), lev(q, s.slice(0, q.length), limit));
+        if(d <= limit) sc = 20 + d;
+      }
+      if(sc !== null && (best === null || sc < best.score)) best = {score:sc, title:t};
+    }
+    if(best) res.push({item:it, title:best.title, alias:best.title !== it.name, q, fuzzy:true, score:best.score});
+  }
+  res.sort((a,b) => a.score - b.score || byName(a.item, b.item));
+  return res.slice(0, 25);
+}
+
+/* Подсветка найденного куска в исходной строке */
+export function hl(text, q){
+  const t = String(text || "");
+  if(!q) return esc(t);
+  const i = soft(t).indexOf(q);
+  if(i < 0) return esc(t);
+  return esc(t.slice(0, i)) + "<mark>" + esc(t.slice(i, i + q.length)) + "</mark>" + esc(t.slice(i + q.length));
+}
+
+/* ---------- Короткое описание позиции ---------- */
 export function itemSubtitle(it){
   const parts = [];
-  if(it.inn && norm(it.inn) !== norm(it.name)) parts.push(it.inn);
+  if(it.inn && soft(it.inn) !== soft(it.name)) parts.push(it.inn);
+  if(it.group) parts.push(it.group);
+  return parts.join(" · ");
+}
+
+/* Подпись для строки результата: если нашлось по торговому названию,
+   первой идёт связь «= основное название». */
+function resultSubtitle(r){
+  const it = r.item;
+  const parts = [];
+  if(r.alias) parts.push("= " + it.name);
+  if(it.inn && soft(it.inn) !== soft(it.name) && soft(it.inn) !== soft(r.title)) parts.push(it.inn);
   if(it.group) parts.push(it.group);
   return parts.join(" · ");
 }
@@ -100,15 +203,17 @@ export function itemSubtitle(it){
 let libQuery = "";
 let libCat = "";
 let libKind = "";
+let libOwn = false;
+let libRx = false;
 
 export function screenLibrary(root){
   root.innerHTML = `
     <h1 class="screen-title">Библиотека</h1>
-    <p class="screen-sub">Лекарства и процедуры. Можно добавить своё.</p>
+    <p class="screen-sub">Ищите как привыкли — по названию с упаковки или по действующему веществу.</p>
 
     <div class="searchbar">
       <span class="si" aria-hidden="true">🔎</span>
-      <input type="search" id="libSearch" placeholder="Название или действующее вещество"
+      <input type="search" id="libSearch" placeholder="Кетонал, Найз, эналаприл…"
              value="${esc(libQuery)}" autocomplete="off" enterkeyhint="search">
     </div>
 
@@ -116,6 +221,11 @@ export function screenLibrary(root){
       <button class="chip ${libKind===""?"on":""}" data-kind="">Всё</button>
       <button class="chip ${libKind==="drug"?"on":""}" data-kind="drug">💊 Лекарства</button>
       <button class="chip ${libKind==="procedure"?"on":""}" data-kind="procedure">🩺 Процедуры</button>
+    </div>
+
+    <div class="pill-nav" id="ownNav">
+      <button class="chip ${libOwn?"on":""}" data-own aria-pressed="${libOwn}">⭐ Только моё</button>
+      <button class="chip ${libRx?"on":""}" data-rx aria-pressed="${libRx}">📋 Только по рецепту</button>
     </div>
 
     <div class="pill-nav" id="catNav">
@@ -141,6 +251,14 @@ export function screenLibrary(root){
     root.querySelectorAll("#kindNav .chip").forEach(c => c.classList.toggle("on", c.dataset.kind === libKind));
     drawResults();
   });
+  root.querySelector("#ownNav").addEventListener("click", e => {
+    const own = e.target.closest("[data-own]");
+    const rx  = e.target.closest("[data-rx]");
+    if(own){ libOwn = !libOwn; own.classList.toggle("on", libOwn); own.setAttribute("aria-pressed", String(libOwn)); }
+    else if(rx){ libRx = !libRx; rx.classList.toggle("on", libRx); rx.setAttribute("aria-pressed", String(libRx)); }
+    else return;
+    drawResults();
+  });
   root.querySelector("#catNav").addEventListener("click", e => {
     const b = e.target.closest("[data-cat]"); if(!b) return;
     libCat = b.dataset.cat;
@@ -150,31 +268,42 @@ export function screenLibrary(root){
 
   function drawResults(){
     const box = $("#libResults", root);
-    const found = searchItems(libQuery, {kind:libKind || null, cat:libCat || null});
+    const found = searchItems(libQuery, {kind:libKind || null, cat:libCat || null, own:libOwn, rx:libRx});
+
     if(!found.length){
       box.innerHTML = `<div class="empty"><span class="big">🔍</span>
         <p><b>Ничего не нашлось</b></p>
-        <p class="hint">Попробуйте другое слово или добавьте свою позицию кнопкой «Добавить».</p></div>`;
+        <p class="hint">${libOwn
+          ? "Среди своих записей совпадений нет. Снимите отметку «Только моё» или добавьте позицию кнопкой «Добавить»."
+          : "Попробуйте часть названия — например «кетон» вместо «Кетонал ДУО», — или добавьте свою позицию кнопкой «Добавить»."}</p></div>`;
       return;
     }
+
+    const fuzzy = found[0].fuzzy;
     const cap = 120;
-    box.innerHTML = `<div class="list">${
-      found.slice(0, cap).map(it => itemRow(it)).join("")
-    }</div>${found.length > cap ? `<p class="hint center mt">Показано ${cap} из ${found.length}. Уточните поиск.</p>` : ""}`;
+    box.innerHTML =
+      (fuzzy ? `<div class="banner"><span class="bi">💡</span><span class="bt">
+          Точного совпадения нет. Возможно, вы искали это — проверьте написание на упаковке.
+        </span></div>` : "") +
+      `<div class="list">${found.slice(0, cap).map(itemRow).join("")}</div>` +
+      (found.length > cap ? `<p class="hint center mt">Показано ${cap} из ${found.length}. Уточните поиск.</p>` : "");
+
     box.querySelectorAll("[data-id]").forEach(b => {
       b.addEventListener("click", () => go("/library/item/" + encodeURIComponent(b.dataset.id)));
     });
   }
 
-  function itemRow(it){
+  function itemRow(r){
+    const it = r.item;
     const cat = categoryOf(it.cat);
+    const sub = resultSubtitle(r);
     return `<button class="item" type="button" data-id="${esc(it.id)}">
-      <div class="top"><span class="nm">${it.kind === "procedure" ? "🩺 " : ""}${esc(it.name)}</span></div>
-      ${itemSubtitle(it) ? `<div class="sub">${esc(itemSubtitle(it))}</div>` : ""}
+      <div class="top"><span class="nm">${it.kind === "procedure" ? "🩺 " : ""}${hl(r.title, r.q)}</span></div>
+      ${sub ? `<div class="sub">${hl(sub, r.q)}</div>` : ""}
       <div class="meta">
         ${cat ? `<span class="tag">${cat.icon} ${esc(cat.name)}</span>` : ""}
         ${it.rx ? `<span class="tag warn">по рецепту</span>` : ""}
-        ${!it.builtin ? `<span class="tag acc">своё</span>` : ""}
+        ${!it.builtin ? `<span class="tag acc">⭐ своё</span>` : it.edited ? `<span class="tag acc">⭐ изменено</span>` : ""}
       </div>
     </button>`;
   }
@@ -194,8 +323,7 @@ export function screenLibraryItem(root, params){
     return;
   }
   const cat = categoryOf(it.cat);
-  const wikiKey = wikiKeyFor(it);
-  const cached = state.data.wikiCache[wikiKey];
+  const cached = state.data.wikiCache[wikiKeyFor(it)];
 
   root.innerHTML = formHead(it.name) + `
     <div class="panel">
@@ -203,11 +331,11 @@ export function screenLibraryItem(root, params){
         ${cat ? `<span class="tag">${cat.icon} ${esc(cat.name)}</span>` : ""}
         <span class="tag">${it.kind === "procedure" ? "🩺 процедура" : "💊 лекарство"}</span>
         ${it.rx ? `<span class="tag warn">по рецепту</span>` : ""}
-        ${!it.builtin ? `<span class="tag acc">своя запись</span>` : ""}
+        ${!it.builtin ? `<span class="tag acc">⭐ своя запись</span>` : it.edited ? `<span class="tag acc">⭐ изменено вами</span>` : ""}
       </div>
       ${it.inn ? kv("Действующее вещество", it.inn) : ""}
       ${it.group ? kv("Группа", it.group) : ""}
-      ${it.brands && it.brands.length ? kv("Встречается под названиями", it.brands.join(", ")) : ""}
+      ${it.brands && it.brands.length ? kv("Встречается в аптеке как", it.brands.join(", ")) : ""}
       ${it.forms && it.forms.length ? kv("Форма выпуска", it.forms.join(", ")) : ""}
       ${it.doses && it.doses.length ? kv("Дозировки", it.doses.join(", ")) : ""}
       ${it.purpose ? kv("От чего помогает", it.purpose) : ""}
@@ -240,6 +368,7 @@ export function screenLibraryItem(root, params){
   $("#editBtn", root).addEventListener("click", () => go("/library/edit/" + encodeURIComponent(it.id)));
   $("#pharmBtn", root).addEventListener("click", () => pharmacySheet(it));
   $("#wikiBtn", root).addEventListener("click", () => fetchWiki(it, root));
+  bindWikiOther(it, root);   // если справка уже была загружена раньше
 
   const hideBtn = $("#hideBtn", root);
   if(hideBtn) hideBtn.addEventListener("click", async () => {
@@ -271,9 +400,13 @@ export function screenLibraryItem(root, params){
 function kv(k, v){
   return `<div class="kv"><span class="k">${esc(k)}</span><span class="v">${esc(v)}</span></div>`;
 }
-
 /* ===================================================================
    Форма добавления и изменения
+
+   Главное правило: обязательное поле ровно одно — название.
+   Всё остальное спрятано под «Подробности» и заполняется когда угодно
+   (или никогда). Плюс два помощника: заполнить из Википедии и взять
+   за образец похожее лекарство из библиотеки.
    =================================================================== */
 export function screenLibraryForm(root, params){
   const editing = !!params.id;
@@ -282,9 +415,13 @@ export function screenLibraryForm(root, params){
 
   const v = {
     kind: src ? src.kind : "drug",
-    name: src ? src.name || "" : "",
+    rx:   src ? !!src.rx : false
+  };
+
+  const val = {
+    name: src ? src.name || "" : (queryName() || ""),
     inn:  src ? src.inn  || "" : "",
-    group:src ? src.group || "" : "",
+    brands: src ? (src.brands || []).join(", ") : "",
     cat:  src ? src.cat  || "" : "",
     forms:src ? (src.forms||[]).join(", ") : "",
     doses:src ? (src.doses||[]).join(", ") : "",
@@ -292,78 +429,117 @@ export function screenLibraryForm(root, params){
     age:  src ? src.age  || "" : "",
     contra: src ? src.contra || "" : "",
     notes: src ? src.notes || "" : "",
-    rx:   src ? !!src.rx : false
+    group: src ? src.group || "" : ""
   };
+
+  const hasDetails = !!(val.inn || val.brands || val.forms || val.doses ||
+                        val.purpose || val.age || val.contra || val.notes || val.group);
 
   root.innerHTML = formHead(editing ? "Изменить позицию" : "Новая позиция") + `
     <form id="libForm" novalidate>
-      <div class="field">
-        <span class="field-label">Что добавляем</span>
-        <div class="chips" id="kindPick">
-          <button type="button" class="chip ${v.kind==="drug"?"on":""}" data-k="drug">💊 Лекарство</button>
-          <button type="button" class="chip ${v.kind==="procedure"?"on":""}" data-k="procedure">🩺 Процедура</button>
+
+      <div class="step">
+        <div class="sh"><span class="n">1</span><span class="t">Самое необходимое</span></div>
+
+        <div class="field">
+          <span class="field-label">Что добавляем</span>
+          <div class="chips" id="kindPick">
+            <button type="button" class="chip ${v.kind==="drug"?"on":""}" data-k="drug">💊 Лекарство</button>
+            <button type="button" class="chip ${v.kind==="procedure"?"on":""}" data-k="procedure">🩺 Процедура</button>
+          </div>
         </div>
-      </div>
 
-      <div class="field">
-        <label for="fName">Название <span class="req">*</span></label>
-        <input type="text" id="fName" value="${esc(v.name)}" required placeholder="Например: Эналаприл">
-      </div>
-
-      <div class="field only-drug">
-        <label for="fInn">Действующее вещество</label>
-        <div class="sub">Помогает находить аналоги. Написано на упаковке мелким шрифтом.</div>
-        <input type="text" id="fInn" value="${esc(v.inn)}">
-      </div>
-
-      <div class="field">
-        <label for="fCat">Раздел</label>
-        <select id="fCat">
-          <option value="">— не указан —</option>
-          ${CATEGORIES.map(c => `<option value="${esc(c.id)}" ${v.cat===c.id?"selected":""}>${c.icon} ${esc(c.name)}</option>`).join("")}
-        </select>
-      </div>
-
-      <div class="field only-drug">
-        <label for="fForms">В каком виде выпускается</label>
-        <div class="sub">Через запятую: таблетки, капсулы, раствор для инъекций, мазь…</div>
-        <input type="text" id="fForms" value="${esc(v.forms)}">
-      </div>
-
-      <div class="field only-drug">
-        <label for="fDoses">Дозировки (граммовки)</label>
-        <div class="sub">Через запятую: 5 мг, 10 мг, 20 мг</div>
-        <input type="text" id="fDoses" value="${esc(v.doses)}">
-      </div>
-
-      <div class="field">
-        <label for="fPurpose">От чего помогает / для чего применяется</label>
-        <div class="sub">Своими словами — так, как объяснил врач.</div>
-        <textarea id="fPurpose">${esc(v.purpose)}</textarea>
-      </div>
-
-      <div class="field">
-        <label for="fAge">Возраст и особенности применения</label>
-        <div class="sub">Например: взрослым, с осторожностью после 65 лет, принимать после еды.</div>
-        <textarea id="fAge">${esc(v.age)}</textarea>
-      </div>
-
-      <div class="field">
-        <label for="fContra">Противопоказания</label>
-        <div class="sub">Полный список всегда есть в инструкции к упаковке.</div>
-        <textarea id="fContra">${esc(v.contra)}</textarea>
-      </div>
-
-      <div class="field only-drug">
-        <span class="field-label">Отпуск</span>
-        <div class="chips">
-          <button type="button" class="chip ${v.rx?"on":""}" id="fRx" aria-pressed="${v.rx}">По рецепту</button>
+        <div class="field">
+          <label for="fName">Название <span class="req">*</span></label>
+          <div class="sub">Так, как написано на упаковке или сказал врач.</div>
+          <input type="text" id="fName" value="${esc(val.name)}" required placeholder="Например: Амосин">
         </div>
+
+        <div class="field">
+          <label for="fCat">Раздел</label>
+          <select id="fCat">
+            <option value="">— не указан —</option>
+            ${CATEGORIES.map(c => `<option value="${esc(c.id)}" ${val.cat===c.id?"selected":""}>${c.icon} ${esc(c.name)}</option>`).join("")}
+          </select>
+        </div>
+
+        <p class="hint">Этого уже достаточно — можно сохранять.
+           Остальное заполнится само или руками, когда будет время.</p>
       </div>
 
-      <div class="field">
-        <label for="fNotes">Примечания</label>
-        <textarea id="fNotes" placeholder="Что угодно на память">${esc(v.notes)}</textarea>
+      <div class="step only-drug">
+        <div class="sh"><span class="n">⚡</span><span class="t">Заполнить быстро</span></div>
+        <div class="btn-col">
+          <button type="button" class="btn wide" id="fromWiki">🌐 Заполнить из интернета</button>
+          <button type="button" class="btn wide" id="fromTemplate">📋 Взять за образец похожее</button>
+        </div>
+        <div id="fillNote"></div>
+      </div>
+
+      <div class="step">
+        <div class="sh"><span class="n">2</span><span class="t">Подробности</span></div>
+        <button type="button" class="btn quiet wide" id="toggleDetails"
+                aria-expanded="${hasDetails}">${hasDetails ? "Свернуть подробности" : "Заполнить подробности — необязательно"}</button>
+
+        <div id="detailsBox" ${hasDetails ? "" : "hidden"} class="mt">
+          <div class="field only-drug">
+            <label for="fInn">Действующее вещество</label>
+            <div class="sub">Написано на упаковке мелким шрифтом. Помогает находить аналоги подешевле.</div>
+            <input type="text" id="fInn" value="${esc(val.inn)}">
+          </div>
+
+          <div class="field only-drug">
+            <label for="fBrands">Другие названия в аптеке</label>
+            <div class="sub">Через запятую. По ним тоже будет искаться.</div>
+            <input type="text" id="fBrands" value="${esc(val.brands)}">
+          </div>
+
+          <div class="field only-drug">
+            <label for="fGroup">Группа</label>
+            <input type="text" id="fGroup" value="${esc(val.group)}" placeholder="Например: НПВП, антибиотик">
+          </div>
+
+          <div class="field only-drug">
+            <label for="fForms">В каком виде выпускается</label>
+            <div class="sub">Через запятую: таблетки, капсулы, мазь…</div>
+            <input type="text" id="fForms" value="${esc(val.forms)}">
+          </div>
+
+          <div class="field only-drug">
+            <label for="fDoses">Дозировки (граммовки)</label>
+            <div class="sub">Через запятую: 250 мг, 500 мг</div>
+            <input type="text" id="fDoses" value="${esc(val.doses)}">
+          </div>
+
+          <div class="field">
+            <label for="fPurpose">От чего помогает</label>
+            <div class="sub">Своими словами — так, как объяснил врач.</div>
+            <textarea id="fPurpose">${esc(val.purpose)}</textarea>
+          </div>
+
+          <div class="field">
+            <label for="fAge">Возраст и особенности применения</label>
+            <textarea id="fAge" placeholder="Например: взрослым, после еды">${esc(val.age)}</textarea>
+          </div>
+
+          <div class="field">
+            <label for="fContra">Противопоказания</label>
+            <div class="sub">Полный список всегда есть в инструкции к упаковке.</div>
+            <textarea id="fContra">${esc(val.contra)}</textarea>
+          </div>
+
+          <div class="field only-drug">
+            <span class="field-label">Отпуск</span>
+            <div class="chips">
+              <button type="button" class="chip ${v.rx?"on":""}" id="fRx" aria-pressed="${v.rx}">По рецепту</button>
+            </div>
+          </div>
+
+          <div class="field">
+            <label for="fNotes">Примечания</label>
+            <textarea id="fNotes" placeholder="Что угодно на память">${esc(val.notes)}</textarea>
+          </div>
+        </div>
       </div>
 
       <div class="sticky-actions">
@@ -378,6 +554,9 @@ export function screenLibraryForm(root, params){
   const form = $("#libForm", root);
   const applyKind = () => {
     root.querySelectorAll(".only-drug").forEach(el => { el.hidden = (v.kind !== "drug"); });
+    if(v.kind !== "drug") return;
+    const db = $("#detailsBox", root);
+    if(db && db.hidden) root.querySelectorAll("#detailsBox .only-drug").forEach(el => { el.hidden = false; });
   };
   root.querySelector("#kindPick").addEventListener("click", e => {
     const b = e.target.closest("[data-k]"); if(!b) return;
@@ -387,6 +566,18 @@ export function screenLibraryForm(root, params){
   });
   applyKind();
 
+  const toggle = $("#toggleDetails", root);
+  toggle.addEventListener("click", () => {
+    const box = $("#detailsBox", root);
+    box.hidden = !box.hidden;
+    toggle.setAttribute("aria-expanded", String(!box.hidden));
+    toggle.textContent = box.hidden ? "Заполнить подробности — необязательно" : "Свернуть подробности";
+  });
+  function openDetails(){
+    const box = $("#detailsBox", root);
+    if(box.hidden){ box.hidden = false; toggle.setAttribute("aria-expanded","true"); toggle.textContent = "Свернуть подробности"; }
+  }
+
   const rxBtn = $("#fRx", root);
   rxBtn.addEventListener("click", () => {
     v.rx = !v.rx;
@@ -394,29 +585,153 @@ export function screenLibraryForm(root, params){
     rxBtn.setAttribute("aria-pressed", String(v.rx));
   });
 
+  /* ---------- помощник: заполнить из интернета ---------- */
+  $("#fromWiki", root).addEventListener("click", async () => {
+    const name = $("#fName", root).value.trim();
+    if(!name){ toast("Сначала впишите название"); $("#fName", root).focus(); return; }
+    if(!navigator.onLine){ toast("Для этого нужен интернет"); return; }
+
+    const note = $("#fillNote", root);
+    note.innerHTML = `<p class="hint mt">Ищем «${esc(name)}» в Википедии…</p>`;
+    try{
+      const data = await wikiFill(name);
+      if(!data){ note.innerHTML = `<p class="hint mt">Ничего подходящего не нашлось. Заполните вручную — это не страшно.</p>`; return; }
+      applyFill(data);
+      note.innerHTML = `<div class="wiki" style="margin-top:.6rem">
+        <div class="wh">ЗАПОЛНЕНО ПО СТАТЬЕ «${esc(data.title)}»</div>
+        <p>Проверьте поля ниже: сведения из Википедии, а не из инструкции.
+           Что-то может не подойти — правьте смело.</p>
+        <div class="mt"><button type="button" class="btn quiet wide" id="fillOther" style="min-height:2.6rem">Взять другую статью</button></div>
+      </div>`;
+      const other = $("#fillOther", root);
+      if(other) other.addEventListener("click", () => pickFillArticle(name, note));
+    }catch(e){
+      note.innerHTML = `<p class="hint mt">Не получилось: ${esc(e.message || "ошибка сети")}. Заполните вручную.</p>`;
+    }
+  });
+
+  async function pickFillArticle(name, note){
+    let cands = [];
+    try{ cands = await wikiCandidatesFor({name}); }catch(e){}
+    if(!cands.length){ toast("Вариантов нет"); return; }
+    const backEl = document.createElement("div");
+    backEl.className = "modal-back";
+    backEl.innerHTML = `<div class="modal" role="dialog" aria-modal="true">
+      <h2>Какая статья подходит?</h2>
+      <div class="btn-col">${cands.slice(0,6).map(c =>
+        `<button class="btn wide" data-t="${esc(c.title)}" style="justify-content:flex-start;text-align:left">${esc(c.title)}</button>`).join("")}</div>
+      <div class="mt"><button class="btn quiet wide" data-close>Отмена</button></div>
+    </div>`;
+    backEl.addEventListener("click", async e => {
+      if(e.target === backEl || e.target.closest("[data-close]")){ backEl.remove(); return; }
+      const b = e.target.closest("[data-t]"); if(!b) return;
+      backEl.remove();
+      note.innerHTML = `<p class="hint mt">Загружаем…</p>`;
+      try{
+        const data = await wikiFill(name, b.dataset.t);
+        if(data){
+          applyFill(data);
+          note.innerHTML = `<div class="wiki" style="margin-top:.6rem">
+            <div class="wh">ЗАПОЛНЕНО ПО СТАТЬЕ «${esc(data.title)}»</div>
+            <p>Проверьте поля ниже и поправьте, если нужно.</p></div>`;
+        }
+      }catch(err){ note.innerHTML = `<p class="hint mt">Не получилось.</p>`; }
+    });
+    document.body.appendChild(backEl);
+  }
+
+  function applyFill(data){
+    openDetails();
+    const set = (id, value) => {
+      const el = $("#" + id, root);
+      if(el && value && !el.value.trim()) el.value = value;
+    };
+    set("fInn", data.inn);
+    set("fGroup", data.group);
+    set("fForms", (data.forms || []).join(", "));
+    set("fPurpose", data.purpose);
+    if(data.cat && !$("#fCat", root).value) $("#fCat", root).value = data.cat;
+    toast("Поля заполнены — проверьте их");
+  }
+
+  /* ---------- помощник: взять за образец ---------- */
+  $("#fromTemplate", root).addEventListener("click", () => {
+    const backEl = document.createElement("div");
+    backEl.className = "modal-back";
+    backEl.innerHTML = `<div class="modal" role="dialog" aria-modal="true">
+      <h2>Взять за образец</h2>
+      <p class="hint mb">Найдите похожее лекарство — из него скопируются раздел,
+        группа, формы выпуска и дозировки. Название останется вашим.</p>
+      <div class="searchbar"><span class="si" aria-hidden="true">🔎</span>
+        <input type="search" id="tplSearch" placeholder="Например: ибупрофен" autocomplete="off"></div>
+      <div id="tplResults"></div>
+      <div class="mt"><button class="btn quiet wide" data-close>Отмена</button></div>
+    </div>`;
+    const inp = backEl.querySelector("#tplSearch");
+    const box = backEl.querySelector("#tplResults");
+    let t = null;
+    inp.addEventListener("input", () => {
+      clearTimeout(t);
+      t = setTimeout(() => {
+        const qq = inp.value.trim();
+        if(qq.length < 2){ box.innerHTML = ""; return; }
+        const found = searchItems(qq, {kind:"drug"}).slice(0, 6);
+        box.innerHTML = `<div class="btn-col mt">${found.map(r => `
+          <button class="pickrow" type="button" data-tpl="${esc(r.item.id)}">
+            <span class="plus" aria-hidden="true">📋</span>
+            <span class="pb"><span class="n">${hl(r.title, r.q)}</span>
+              <span class="s">${esc(itemSubtitle(r.item))}</span></span>
+          </button>`).join("")}</div>`;
+      }, 180);
+    });
+    backEl.addEventListener("click", e => {
+      if(e.target === backEl || e.target.closest("[data-close]")){ backEl.remove(); return; }
+      const b = e.target.closest("[data-tpl]"); if(!b) return;
+      const it = getItem(b.dataset.tpl);
+      backEl.remove();
+      if(!it) return;
+      openDetails();
+      if(!$("#fCat", root).value) $("#fCat", root).value = it.cat || "";
+      const set = (id, value) => { const el = $("#" + id, root); if(el && value && !el.value.trim()) el.value = value; };
+      set("fInn", it.inn);
+      set("fGroup", it.group);
+      set("fForms", (it.forms || []).join(", "));
+      set("fDoses", (it.doses || []).join(", "));
+      if(it.rx && !v.rx){ v.rx = true; rxBtn.classList.add("on"); rxBtn.setAttribute("aria-pressed","true"); }
+      $("#fillNote", root).innerHTML = `<p class="hint mt">Взято за образец: <b>${esc(it.name)}</b>. Проверьте поля.</p>`;
+      toast("Скопировано из «" + it.name + "»");
+    });
+    document.body.appendChild(backEl);
+    inp.focus();
+  });
+
+  /* ---------- сохранение ---------- */
   form.addEventListener("submit", e => {
     e.preventDefault();
     const name = $("#fName", root).value.trim();
     if(!name){ toast("Впишите название"); $("#fName", root).focus(); return; }
 
+    const gv = id => { const el = $("#" + id, root); return el ? el.value.trim() : ""; };
     const splitList = s => s.split(",").map(x => x.trim()).filter(Boolean);
+    const isDrug = v.kind === "drug";
+
     const payload = {
       kind: v.kind,
       name,
-      inn: v.kind === "drug" ? $("#fInn", root).value.trim() : "",
-      group: src && src.group ? src.group : "",
-      cat: $("#fCat", root).value,
-      forms: v.kind === "drug" ? splitList($("#fForms", root).value) : [],
-      doses: v.kind === "drug" ? splitList($("#fDoses", root).value) : [],
-      purpose: $("#fPurpose", root).value.trim(),
-      age: $("#fAge", root).value.trim(),
-      contra: $("#fContra", root).value.trim(),
-      notes: $("#fNotes", root).value.trim(),
-      rx: v.kind === "drug" ? v.rx : false
+      inn: isDrug ? gv("fInn") : "",
+      brands: isDrug ? splitList(gv("fBrands")) : [],
+      group: isDrug ? gv("fGroup") : "",
+      cat: gv("fCat"),
+      forms: isDrug ? splitList(gv("fForms")) : [],
+      doses: isDrug ? splitList(gv("fDoses")) : [],
+      purpose: gv("fPurpose"),
+      age: gv("fAge"),
+      contra: gv("fContra"),
+      notes: gv("fNotes"),
+      rx: isDrug ? v.rx : false
     };
 
     if(editing && src.builtin){
-      // Встроенную позицию не переписываем — храним только правки поверх неё.
       state.data.libraryEdits[src.id] = payload;
       save(true); toast("Сохранено");
       go("/library/item/" + encodeURIComponent(src.id), true);
@@ -429,32 +744,150 @@ export function screenLibraryForm(root, params){
       const item = Object.assign({id: uid("li"), createdAt: new Date().toISOString()}, payload);
       state.data.libraryCustom.push(item);
       save(true); toast("Добавлено в библиотеку");
-      go("/library/item/" + encodeURIComponent(item.id), true);
+      const q = queryParams();
+      if(q.link){
+        // Пришли из карточки назначения — связываем её с новой позицией
+        const c = state.data.courses.find(x => x.id === q.link);
+        if(c){ c.libId = item.id; save(true); }
+        go("/home/course/" + encodeURIComponent(q.link), true);
+      }else if(q.then === "course"){
+        go("/home/course/new?lib=" + encodeURIComponent(item.id), true);
+      }else{
+        go("/library/item/" + encodeURIComponent(item.id), true);
+      }
     }
   });
 }
 
+function queryName(){
+  const q = queryParams();
+  return q.name ? decodeURIComponent(q.name) : "";
+}
+
+/* ===================================================================
+   Автозаполнение по статье Википедии
+
+   Из краткого описания вытаскиваются группа, формы выпуска и фраза
+   «для чего применяется». Всё попадает в поля формы как черновик —
+   ничего не сохраняется само, пользователь видит и правит.
+   =================================================================== */
+const FORM_WORDS = [
+  ["таблетки", /таблет/i], ["капсулы", /капсул/i], ["мазь", /\bмаз[ьию]/i],
+  ["гель", /\bгел[ьяие]/i], ["крем", /\bкрем/i], ["раствор", /раствор/i],
+  ["спрей", /спре[йя]/i], ["капли", /\bкапл[ияе]/i], ["сироп", /сироп/i],
+  ["суппозитории", /суппозитор|свеч[кие]/i], ["порошок", /порош[ко]/i],
+  ["суспензия", /суспенз/i], ["пластырь", /пластыр/i], ["ингаляции", /ингаля/i]
+];
+
+const CAT_HINTS = [
+  ["pain",       /нестероидн|анальгет|обезболив|жаропониж|противовоспалительн|подагр/i],
+  ["antibiotic", /антибиотик|противомикробн|противогрибков|противовирусн|сульфаниламид/i],
+  ["heart",      /гипертенз|артериальн[оы]* давлени|бета-адреноблокатор|ингибитор апф|сартан|аритм|стенокард|сердечн/i],
+  ["vessels",    /статин|холестерин|антиагрегант|антикоагулянт|тромб|венотон/i],
+  ["stomach",    /желудочн|изжог|протонн|гастр|кишечн|слабительн|диаре|печен|желчегон|фермент/i],
+  ["allergy",    /антигистаминн|аллерг/i],
+  ["breath",     /кашл|бронх|отхаркива|муколит|простуд|грипп/i],
+  ["ent",        /горл|носов|ринит|отит|ушн/i],
+  ["nerves",     /успокоительн|седативн|антидепрессант|ноотроп|тревог|бессонниц|снотворн/i],
+  ["diabetes",   /сахарн|гликем|инсулин|диабет/i],
+  ["vitamins",   /витамин|минерал|микроэлемент/i],
+  ["eyes",       /глазн|офтальм/i],
+  ["uro",        /мочев|простат|почечн|уросептик/i],
+  ["skin",       /антисептик|кожн|дерматолог|ранозажив/i],
+  ["hormones",   /гормон|глюкокортикоид|щитовидн/i]
+];
+
+async function wikiCandidatesFor(itemLike){
+  return await wikiCandidates({
+    name: itemLike.name || "",
+    inn: itemLike.inn || "",
+    brands: itemLike.brands || []
+  });
+}
+
+async function wikiFill(name, forcedTitle){
+  let title = forcedTitle;
+  if(!title){
+    const cands = await wikiCandidatesFor({name});
+    if(!cands.length) return null;
+    title = cands[0].title;
+  }
+  const sum = await wikiSummary(title);
+  const text = String(sum.extract || "");
+  if(!text) return null;
+
+  // Группа: «из группы …», «относится к группе …», «— это <что-то> средство»
+  let group = "";
+  let m = text.match(/(?:из\s+групп[ыи]|относится\s+к\s+групп[еы]|групп[аы])\s+([^.,;()]{4,70})/i);
+  if(m) group = m[1].trim();
+  if(!group){
+    m = text.match(/—\s*([^.,;()]{4,70}?(?:средство|препарат|антибиотик|витамин|гормон))/i);
+    if(m) group = m[1].trim();
+  }
+  group = group.replace(/^\s*(?:лекарственн\w+\s+)?/i, "").trim();
+  if(group.length > 70) group = "";
+
+  // Формы выпуска
+  const forms = FORM_WORDS.filter(([, re]) => re.test(text)).map(([w]) => w);
+
+  // Для чего применяется — предложение с характерным словом
+  const sentences = text.split(/(?<=[.!?])\s+/).filter(Boolean);
+  let purpose = sentences.find(s => /применя|использу|назнача|показан|лечени|терапи/i.test(s)) || "";
+  if(!purpose) purpose = sentences.slice(0, 2).join(" ");
+  if(purpose.length > 400) purpose = purpose.slice(0, 400).replace(/\s+\S*$/, "") + "…";
+  if(purpose) purpose += "\n\n(из Википедии — проверьте и поправьте)";
+
+  // Действующее вещество: «действующее вещество — X» либо заголовок статьи
+  let inn = "";
+  m = text.match(/действующе[ем]\s+веществ[оа][^.]{0,30}?[—:-]\s*([^.,;()]{3,45})/i);
+  if(m) inn = m[1].trim();
+  if(!inn && soft(sum.title || "") !== soft(name) && /^[А-ЯЁA-Z][а-яёa-z-]+$/.test(String(sum.title || "").trim()))
+    inn = String(sum.title).trim();
+
+  // Раздел библиотеки — по ключевым словам
+  let cat = "";
+  const hay = (group + " " + text).toLowerCase();
+  for(const [id, re] of CAT_HINTS){ if(re.test(hay)){ cat = id; break; } }
+
+  return { title: sum.title || title, group, forms, purpose, inn, cat };
+}
+
 /* ===================================================================
    Справка из Википедии
-   Подгружается только по кнопке и только при интернете.
-   Сохраняется на устройстве и дальше работает офлайн.
+
+   Тонкость: у многих препаратов статья в Википедии написана про
+   действующее вещество или даже про исходный организм (у «Энтерола» —
+   про дрожжи Saccharomyces boulardii). Поэтому кандидаты сначала
+   оцениваются, а рядом со справкой всегда есть кнопка «Это не та статья».
    =================================================================== */
-function wikiKeyFor(it){
-  return (it.inn || it.name).trim().toLowerCase();
+function wikiKeyFor(it){ return (it.name || it.inn || "").trim().toLowerCase(); }
+
+const MED_WORDS = ["препарат","лекарств","применяют","применяется","фармак","таблет",
+                   "показан","терапи","лечени","доза","мазь","раствор","капсул","антибиотик",
+                   "средство","медицин"];
+
+function medScore(text){
+  const t = soft(text || "");
+  let n = 0;
+  for(const w of MED_WORDS) if(t.includes(w)) n++;
+  return n;
 }
 
 function wikiHtml(c){
+  const weak = c.medScore !== undefined && c.medScore < 2;
   return `<div class="wiki">
     <div class="wh">СПРАВКА ИЗ ВИКИПЕДИИ — не назначение врача</div>
     <div><b>${esc(c.title)}</b></div>
     <p class="mt">${esc(c.extract)}</p>
+    ${weak ? `<p class="hint mt">Похоже, статья не про лекарство. Проверьте по кнопке ниже.</p>` : ""}
     <div class="wsrc">Источник: Википедия${c.url ? ` · <a href="${esc(c.url)}" target="_blank" rel="noopener">открыть статью</a>` : ""}
       · загружено ${c.fetchedAt ? new Date(c.fetchedAt).toLocaleDateString("ru-RU") : "—"}
       · лицензия CC BY-SA</div>
+    <div class="mt"><button class="btn quiet wide" id="wikiOther" style="min-height:2.6rem">Это не та статья — выбрать другую</button></div>
   </div>`;
 }
 
-async function fetchWiki(it, root){
+async function fetchWiki(it, root, forcedTitle){
   const box = $("#wikiBox", root);
   if(!navigator.onLine){
     toast("Нет интернета. Справку можно загрузить, когда появится сеть.");
@@ -462,22 +895,27 @@ async function fetchWiki(it, root){
   }
   box.innerHTML = `<div class="wiki"><div class="wh">ЗАГРУЗКА…</div><p>Ищем статью в Википедии…</p></div>`;
 
-  const query = (it.inn || it.name).replace(/\(.*?\)/g, "").trim();
   try{
-    const title = await wikiFindTitle(query);
-    if(!title) throw new Error("Статья не найдена");
+    let title = forcedTitle;
+    if(!title){
+      const cands = await wikiCandidates(it);
+      if(!cands.length) throw new Error("Статья не найдена");
+      title = cands[0].title;
+    }
     const sum = await wikiSummary(title);
     const rec = {
       title: sum.title || title,
       extract: sum.extract || "",
       url: (sum.content_urls && sum.content_urls.desktop && sum.content_urls.desktop.page) ||
            ("https://ru.wikipedia.org/wiki/" + encodeURIComponent(title)),
-      fetchedAt: Date.now()
+      fetchedAt: Date.now(),
+      medScore: medScore(sum.extract)
     };
     if(!rec.extract) throw new Error("В статье нет краткого описания");
     state.data.wikiCache[wikiKeyFor(it)] = rec;
     save(true);
     box.innerHTML = wikiHtml(rec);
+    bindWikiOther(it, root);
     toast("Справка сохранена на устройстве");
   }catch(e){
     box.innerHTML = `<div class="wiki">
@@ -487,15 +925,78 @@ async function fetchWiki(it, root){
   }
 }
 
-async function wikiFindTitle(q){
+function bindWikiOther(it, root){
+  const b = $("#wikiOther", root);
+  if(b) b.addEventListener("click", () => chooseWikiArticle(it, root));
+}
+
+/* Собираем кандидатов по торговому названию и по действующему веществу,
+   затем оцениваем: насколько заголовок похож на искомое и насколько
+   текст похож на описание лекарства. */
+async function wikiCandidates(it){
+  const queries = [];
+  if(it.name) queries.push(it.name.replace(/\(.*?\)/g, "").trim());
+  if(it.inn && soft(it.inn) !== soft(it.name)) queries.push(it.inn.replace(/\(.*?\)/g, "").trim());
+  (it.brands || []).slice(0, 1).forEach(b => queries.push(b));
+
+  const seen = new Set();
+  const out = [];
+  for(const q of queries){
+    let hits = [];
+    try{ hits = await wikiSearch(q, 5); }catch(e){ continue; }
+    for(const h of hits){
+      if(seen.has(h.title)) continue;
+      seen.add(h.title);
+      const t = soft(h.title), qq = soft(q);
+      let score = 0;
+      if(t === qq) score += 100;
+      else if(t.startsWith(qq)) score += 60;
+      else if(t.includes(qq)) score += 30;
+      score += medScore(h.snippet) * 12;
+      out.push({title:h.title, snippet:h.snippet, score});
+    }
+  }
+  out.sort((a,b) => b.score - a.score);
+  return out;
+}
+
+async function chooseWikiArticle(it, root){
+  if(!navigator.onLine){ toast("Нет интернета"); return; }
+  toast("Ищем варианты…");
+  let cands = [];
+  try{ cands = await wikiCandidates(it); }catch(e){}
+  if(!cands.length){ toast("Вариантов не нашлось"); return; }
+
+  const backEl = document.createElement("div");
+  backEl.className = "modal-back";
+  backEl.innerHTML = `<div class="modal" role="dialog" aria-modal="true">
+    <h2>Какая статья подходит?</h2>
+    <p class="hint mb">У лекарств статья часто написана про действующее вещество.</p>
+    <div class="btn-col">
+      ${cands.slice(0, 6).map(c => `<button class="btn wide" data-t="${esc(c.title)}"
+        style="justify-content:flex-start; text-align:left">${esc(c.title)}</button>`).join("")}
+    </div>
+    <div class="mt"><button class="btn quiet wide" data-close>Отмена</button></div>
+  </div>`;
+  backEl.addEventListener("click", e => {
+    if(e.target === backEl || e.target.closest("[data-close]")){ backEl.remove(); return; }
+    const b = e.target.closest("[data-t]");
+    if(!b) return;
+    backEl.remove();
+    fetchWiki(it, root, b.dataset.t);
+  });
+  document.body.appendChild(backEl);
+}
+
+async function wikiSearch(q, limit){
   const url = "https://ru.wikipedia.org/w/api.php?action=query&list=search" +
               "&srsearch=" + encodeURIComponent(q) +
-              "&srlimit=1&format=json&origin=*";
+              "&srlimit=" + (limit || 5) + "&format=json&origin=*";
   const r = await fetch(url);
   if(!r.ok) throw new Error("Википедия не отвечает");
   const d = await r.json();
-  const hit = d && d.query && d.query.search && d.query.search[0];
-  return hit ? hit.title : null;
+  const hits = (d && d.query && d.query.search) || [];
+  return hits.map(h => ({ title: h.title, snippet: String(h.snippet || "").replace(/<[^>]*>/g, "") }));
 }
 
 async function wikiSummary(title){
@@ -508,9 +1009,6 @@ async function wikiSummary(title){
 
 /* ===================================================================
    Поиск в аптеках
-   Открывается обычный поиск в браузере. Ничего не парсится: браузер
-   не даёт странице читать чужие сайты, а аптечные сайты закрыты
-   защитой от автоматических обращений.
    =================================================================== */
 const PHARMACIES = [
   { name:"Волгофарм",        site:"volgofarm.ru" },

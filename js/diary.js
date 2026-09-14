@@ -8,7 +8,7 @@
 import { state, save, uid } from "./store.js";
 import { $, esc, go, back, toast, formHead, confirmDialog, profileSwitch,
          todayISO, nowHM, fmtDate, fmtDateShort, fmtDayHeader, stepper,
-         render, plural } from "./ui.js";
+         render, plural, dateFieldHTML, bindDateField } from "./ui.js";
 
 /* Русское оформление числа: разделитель — запятая */
 export function nf(v, dec){
@@ -362,10 +362,7 @@ export function screenMetricAdd(root, params){
       <div id="fieldsBox"></div>
 
       <div class="row2">
-        <div class="field">
-          <label for="mDate">Дата</label>
-          <input type="date" id="mDate" value="${todayISO()}" max="${todayISO()}">
-        </div>
+        ${dateFieldHTML("mDate", todayISO(), {label:"Дата"})}
         <div class="field">
           <label for="mTime">Время</label>
           <input type="time" id="mTime" value="${nowHM()}">
@@ -385,6 +382,8 @@ export function screenMetricAdd(root, params){
       </div>
     </form>
   `;
+
+  const dateF = bindDateField(root, "mDate", {max: todayISO()});
 
   const box = $("#fieldsBox", root);
   m.fields.forEach(f => {
@@ -448,7 +447,7 @@ export function screenMetricAdd(root, params){
       id: uid("ms"),
       profileId: state.data.activeProfileId,
       type: m.id,
-      date: $("#mDate", root).value || todayISO(),
+      date: dateF.get() || todayISO(),
       time: $("#mTime", root).value || "",
       values,
       note: $("#mNote", root).value.trim()
@@ -473,10 +472,7 @@ export function screenDayNote(root){
 
   root.innerHTML = formHead("Самочувствие") + `
     <form id="nForm" novalidate>
-      <div class="field">
-        <label for="nDate">Дата</label>
-        <input type="date" id="nDate" value="${today}" max="${today}">
-      </div>
+      ${dateFieldHTML("nDate", today, {label:"Дата"})}
       <div class="field">
         <span class="field-label">Как самочувствие</span>
         <div class="chips" id="moodPick">
@@ -498,6 +494,14 @@ export function screenDayNote(root){
     </form>
   `;
 
+  const noteDateF = bindDateField(root, "nDate", {max: today, onChange: iso => {
+    // при смене даты подставляем уже существующую запись этого дня
+    const ex = state.data.dayNotes.find(n => n.profileId === state.data.activeProfileId && n.date === iso);
+    $("#nText", root).value = ex ? ex.text : "";
+    mood = ex ? ex.mood : "";
+    root.querySelectorAll("#moodPick .chip").forEach(c => c.classList.toggle("on", c.dataset.mood === mood));
+  }});
+
   root.querySelector("#moodPick").addEventListener("click", e => {
     const b = e.target.closest("[data-mood]"); if(!b) return;
     mood = (mood === b.dataset.mood) ? "" : b.dataset.mood;
@@ -506,7 +510,7 @@ export function screenDayNote(root){
 
   $("#nForm", root).addEventListener("submit", e => {
     e.preventDefault();
-    const date = $("#nDate", root).value || today;
+    const date = noteDateF.get() || today;
     const text = $("#nText", root).value.trim();
     if(!text && !mood){ toast("Отметьте самочувствие или напишите заметку"); return; }
 

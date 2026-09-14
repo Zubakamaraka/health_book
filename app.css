@@ -232,6 +232,95 @@ textarea{min-height:5.5rem; resize:vertical;}
   border-color:var(--accent); background:var(--accent-soft); color:var(--accent);
 }
 
+/* Поле-кнопка с датой */
+.datefield{
+  width:100%; min-height:3.2rem; display:flex; align-items:center; gap:.6rem;
+  padding:.55rem .8rem; border:2px solid var(--line); border-radius:12px;
+  background:var(--card); color:var(--ink); font-weight:700; text-align:left;
+}
+.datefield .ic{font-size:1.15rem; line-height:1;}
+.datefield:active{background:var(--bg2);}
+
+/* Календарь */
+.modal.cal{max-width:22rem;}
+.cal-head{display:flex; align-items:center; gap:.35rem; margin-bottom:.6rem;}
+.cal-nav{
+  flex:0 0 2.8rem; min-height:2.8rem; border:2px solid var(--line); border-radius:10px;
+  background:var(--bg2); font-size:1.35rem; font-weight:800; color:var(--accent);
+}
+.cal-title{
+  flex:1; min-height:2.8rem; border:2px solid var(--line); border-radius:10px;
+  background:var(--card); font-weight:800; font-size:1.02rem; color:var(--ink);
+}
+.cal-wd{
+  display:grid; grid-template-columns:repeat(7,1fr); gap:.2rem;
+  font-size:.75rem; font-weight:800; color:var(--muted); text-align:center; margin-bottom:.25rem;
+}
+.cal-grid{display:grid; grid-template-columns:repeat(7,1fr); gap:.2rem;}
+.cal-grid.months{grid-template-columns:repeat(3,1fr); gap:.4rem;}
+.cal-grid.years{grid-template-columns:repeat(4,1fr); gap:.4rem;}
+.cal-cell{
+  min-height:2.7rem; border:2px solid transparent; border-radius:10px;
+  background:var(--bg2); color:var(--ink); font-weight:700; font-size:1rem;
+  font-variant-numeric:tabular-nums;
+}
+.cal-cell.wide{min-height:3rem;}
+.cal-cell.empty{background:none;}
+.cal-cell.we{color:var(--muted);}
+.cal-cell.today{border-color:var(--accent);}
+.cal-cell.sel{background:var(--accent); color:var(--accent-ink); border-color:var(--accent);}
+.cal-cell.off{opacity:.3;}
+.cal-cell:not(.empty):not(.off):active{background:var(--accent-soft);}
+
+/* Подсветка найденного */
+mark{
+  background:var(--warn-soft); color:inherit; font-weight:800;
+  border-radius:4px; padding:0 .1em;
+}
+.item .nm mark{background:var(--accent-soft); color:var(--accent);}
+
+/* Шаги в форме назначения */
+.step{
+  border:2px solid var(--line); border-radius:var(--radius-lg);
+  background:var(--card); padding:.95rem; margin:.85rem 0; box-shadow:var(--shadow);
+}
+.step > .sh{
+  display:flex; align-items:center; gap:.5rem; margin-bottom:.6rem;
+  border-bottom:1.5px dashed var(--line-soft); padding-bottom:.45rem;
+}
+.step > .sh .n{
+  flex:0 0 1.9rem; height:1.9rem; border-radius:50%;
+  background:var(--accent); color:var(--accent-ink);
+  display:flex; align-items:center; justify-content:center;
+  font-weight:800; font-size:1rem;
+}
+.step > .sh .t{font-family:Georgia,serif; font-size:1.12rem; font-weight:700;}
+.step.done > .sh .n{background:var(--ok);}
+
+.picked{
+  border:2px solid var(--ok); background:var(--ok-soft); border-radius:12px;
+  padding:.7rem .8rem; display:flex; align-items:flex-start; gap:.6rem;
+}
+.picked .pi{font-size:1.2rem; line-height:1.2;}
+.picked .pt{flex:1; min-width:0;}
+.picked .pt b{font-size:1.05rem;}
+.picked .pt .s{color:var(--muted); font-size:.86rem; display:block; margin-top:.1rem;}
+
+.pickrow{
+  display:flex; align-items:center; gap:.5rem; width:100%; text-align:left;
+  border:2px solid var(--accent-soft); border-radius:12px; background:var(--card);
+  padding:.6rem .7rem; color:inherit;
+}
+.pickrow:active{background:var(--accent-soft);}
+.pickrow .plus{
+  flex:0 0 2.2rem; height:2.2rem; border-radius:50%;
+  background:var(--accent-soft); color:var(--accent);
+  display:flex; align-items:center; justify-content:center; font-weight:800; font-size:1.2rem;
+}
+.pickrow .pb{flex:1; min-width:0;}
+.pickrow .pb .n{display:block; font-weight:800; font-size:1.02rem;}
+.pickrow .pb .s{display:block; color:var(--muted); font-size:.85rem; margin-top:.1rem;}
+
 /* Степпер: крупный ввод чисел без клавиатуры */
 .stepper{
   display:flex; align-items:stretch; gap:.5rem;
