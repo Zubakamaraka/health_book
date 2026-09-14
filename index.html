@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Книга здоровья</title>
+<meta name="description" content="Дневник здоровья, лекарства и процедуры. Работает без интернета, данные хранятся только на устройстве.">
+<meta name="theme-color" content="#17627E">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+
+<header id="appHeader">
+  <button class="brand" id="brandBtn" type="button" title="На главную">
+    <span class="logo" aria-hidden="true">📘</span>
+    <span class="t">Книга здоровья</span>
+  </button>
+
+  <div class="hgroup">
+    <span class="scale-group">
+      <button class="hbtn" id="scaleDown" type="button" aria-label="Уменьшить размер текста">А−</button>
+      <button class="hbtn" id="scaleUp" type="button" aria-label="Увеличить размер текста">А+</button>
+    </span>
+    <button class="hbtn" id="themeBtn" type="button" aria-label="Переключить тёмный режим">🌙</button>
+    <span class="netdot off" id="netDot" role="status" aria-live="polite"><span class="d" aria-hidden="true"></span><span class="netTxt">офлайн</span></span>
+  </div>
+</header>
+
+<main id="screen" tabindex="-1"></main>
+
+<nav id="tabbar" aria-label="Разделы">
+  <button class="tab" data-route="#/home" type="button">
+    <span class="ic" aria-hidden="true">💊</span><span class="lb">Главная</span>
+  </button>
+  <button class="tab" data-route="#/library" type="button">
+    <span class="ic" aria-hidden="true">📚</span><span class="lb">Библиотека</span>
+  </button>
+  <button class="tab" data-route="#/diary" type="button">
+    <span class="ic" aria-hidden="true">📈</span><span class="lb">Дневник</span>
+  </button>
+  <button class="tab" data-route="#/settings" type="button">
+    <span class="ic" aria-hidden="true">⚙️</span><span class="lb">Настройки</span>
+  </button>
+</nav>
+
+<div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+
+<script type="module" src="js/app.js"></script>
+</body>
+</html>
