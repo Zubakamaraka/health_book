@@ -455,7 +455,9 @@ export function screenMetricAdd(root, params){
     state.data.measurements.push(rec);
     save(true);
     toast("Записано");
-    go("/diary/type/" + m.id, true);
+    // Возвращаемся назад, а не подменяем адрес: раньше в истории оставались
+    // два одинаковых экрана подряд и «Назад» приходилось жать дважды.
+    back("/diary/type/" + m.id);
   });
 }
 

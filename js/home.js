@@ -7,7 +7,8 @@ import { $, $$, esc, go, back, toast, formHead, addFab, confirmDialog,
          profileSwitch, todayISO, shiftISO, fmtDayHeader, fmtDate, fmtDateShort,
          daysBetween, plural, pickImage, viewPhoto, queryParams, render,
          pickDate, dateFieldHTML, bindDateField } from "./ui.js";
-import { searchItems, getItem, itemSubtitle, hl } from "./library.js";
+import { searchItems, getItem, itemSubtitle, hl, doseHint } from "./library.js";
+import { duplicateBanner } from "./kits.js";
 
 /* Времена приёма */
 export const TIMES = [
@@ -21,6 +22,14 @@ export const timeName = id => (TIMES.find(t => t.id === id) || {}).name || id;
 
 /* Какой день показываем на главной */
 let viewDay = todayISO();
+
+/* Черновик незаконченного назначения.
+   Нужен, потому что «Открыть карточку» уводит на другой экран, и при
+   возврате форма собиралась заново — всё введённое пропадало.
+   Живёт в памяти вкладки, хранится два часа. */
+let courseDraft = null;
+const DRAFT_TTL = 2 * 60 * 60 * 1000;
+export function clearCourseDraft(){ courseDraft = null; }
 
 /* ---------- Вспомогательное ---------- */
 export function profileCourses(includeArchived){
@@ -90,6 +99,8 @@ export function screenHome(root){
     </div>
     ${!isToday ? `<div class="center mb"><button class="btn quiet" id="dayToday">Вернуться к сегодня</button></div>` : ""}
 
+    ${duplicateBanner(profileCourses())}
+
     ${total ? `<div class="panel accent flat" style="padding:.75rem .9rem">
       <b>Принято ${done} из ${total}</b>
       <div class="hint" style="margin-top:.2rem">${done >= total ? "Всё на сегодня выполнено 👍" : "Отмечайте приём кнопками ниже"}</div>
@@ -99,8 +110,9 @@ export function screenHome(root){
     ${onDemand.length ? `<h2 class="screen-title" style="font-size:1.15rem;margin-top:1.2rem">По необходимости</h2>
       <div id="onDemandList"></div>` : ""}
 
-    <div class="mt center">
-      <button class="btn quiet" id="archBtn">Завершённые назначения</button>
+    <div class="btn-row mt">
+      <button class="btn" id="kitsBtn">📦 Мои наборы</button>
+      <button class="btn quiet" id="archBtn">Завершённые</button>
     </div>
   `;
 
@@ -114,6 +126,7 @@ export function screenHome(root){
   const td = $("#dayToday", root);
   if(td) td.addEventListener("click", () => { viewDay = todayISO(); render(); });
   $("#archBtn", root).addEventListener("click", () => go("/home/archive"));
+  $("#kitsBtn", root).addEventListener("click", () => go("/home/kits"));
 
   drawList($("#courseList", root), scheduled, false);
   if(onDemand.length) drawList($("#onDemandList", root), onDemand, true);
@@ -153,6 +166,7 @@ export function screenHome(root){
     return `<div class="item">
       <button type="button" data-open="${esc(c.id)}" style="all:unset;display:block;width:100%;cursor:pointer">
         <div class="top"><span class="nm">${c.kind === "procedure" ? "🩺 " : "💊 "}${esc(c.name)}</span></div>
+        ${lib && lib.tldr ? `<div class="tldr">${esc(lib.tldr)}</div>` : ""}
         ${c.dose ? `<div class="sub">${esc(c.dose)}</div>` : ""}
         ${c.reason ? `<div class="sub">Для чего: ${esc(c.reason)}</div>` : ""}
         <div class="meta">
@@ -200,7 +214,8 @@ export function screenCourse(root, params){
 
     ${lib ? `<div class="panel">
       <h2>Из библиотеки</h2>
-      <p><b>${esc(lib.name)}</b>${itemSubtitle(lib) ? `<br><span class="hint">${esc(itemSubtitle(lib))}</span>` : ""}</p>
+      <p><b>${esc(lib.name)}</b>${lib.tldr ? `<br><span class="tldr">${esc(lib.tldr)}</span>` : ""}
+        ${itemSubtitle(lib) ? `<br><span class="hint">${esc(itemSubtitle(lib))}</span>` : ""}</p>
       <div class="mt"><button class="btn wide" id="openLib">Открыть карточку в библиотеке</button></div>
     </div>` : `<div class="panel">
       <h2>Нет в библиотеке</h2>
@@ -365,22 +380,35 @@ export function screenCourseForm(root, params){
   const q = queryParams();
   const preLib = !editing && q.lib ? getItem(q.lib) : null;
 
+  // Черновик восстанавливаем только для нового назначения и только если
+  // не пришли из карточки конкретного лекарства (там намерение свежее).
+  const draft = (!editing && !preLib && courseDraft &&
+                 (Date.now() - courseDraft.at) < DRAFT_TTL) ? courseDraft : null;
+  const restored = !!draft;
+
   const v = {
-    libId:  src ? src.libId : (preLib ? preLib.id : null),
-    kind:   src ? src.kind  : (preLib ? preLib.kind : "drug"),
-    name:   src ? src.name  : (preLib ? preLib.name : ""),
-    dose:   src ? src.dose  : "",
-    times:  src ? (src.times || []).slice() : ["morning"],
-    everyN: src ? (src.everyN || 1) : 1,
-    startDate: src ? src.startDate : todayISO(),
-    endDate:   src ? (src.endDate || "") : "",
-    reason: src ? src.reason : "",
-    doctor: src ? src.doctor : "",
-    notes:  src ? src.notes  : ""
+    libId:  src ? src.libId : (preLib ? preLib.id : (draft ? draft.libId : null)),
+    kind:   src ? src.kind  : (preLib ? preLib.kind : (draft ? draft.kind : "drug")),
+    name:   src ? src.name  : (preLib ? preLib.name : (draft ? draft.name : "")),
+    dose:   src ? src.dose  : (draft ? draft.dose : ""),
+    times:  src ? (src.times || []).slice() : (draft ? draft.times.slice() : ["morning"]),
+    everyN: src ? (src.everyN || 1) : (draft ? draft.everyN : 1),
+    startDate: src ? src.startDate : (draft ? draft.startDate : todayISO()),
+    endDate:   src ? (src.endDate || "") : (draft ? draft.endDate : ""),
+    reason: src ? src.reason : (draft ? draft.reason : ""),
+    doctor: src ? src.doctor : (draft ? draft.doctor : ""),
+    notes:  src ? src.notes  : (draft ? draft.notes : ""),
+    pickedName: draft ? draft.pickedName : (preLib ? preLib.name : "")
   };
 
   root.innerHTML = formHead(editing ? "Изменить назначение" : "Новое назначение") + `
     <form id="cForm" novalidate>
+
+      ${restored ? `<div class="banner" id="draftBanner">
+        <span class="bi">📝</span>
+        <span class="bt">Здесь остался незаконченный черновик — продолжайте с того же места.</span>
+        <button type="button" class="btn quiet" id="draftClear" style="min-height:2.4rem;flex:0 0 auto">Начать заново</button>
+      </div>` : ""}
 
       ${editing ? "" : `
       <div class="step" id="step1">
@@ -486,9 +514,36 @@ export function screenCourseForm(root, params){
   `;
 
   /* --- даты через календарь --- */
-  const startF = bindDateField(root, "cStart");
-  const endF   = bindDateField(root, "cEnd", {empty:"не ограничено"});
-  $("#cEndClear", root).addEventListener("click", () => { endF.clear(); toast("Дата окончания убрана"); });
+  const startF = bindDateField(root, "cStart", {onChange: () => snapDraft()});
+  const endF   = bindDateField(root, "cEnd", {empty:"не ограничено", onChange: () => snapDraft()});
+  $("#cEndClear", root).addEventListener("click", () => { endF.clear(); snapDraft(); toast("Дата окончания убрана"); });
+
+  /* --- черновик --- */
+  function snapDraft(){
+    if(editing) return;
+    const g = id => { const el = $("#" + id, root); return el ? el.value : ""; };
+    courseDraft = {
+      at: Date.now(),
+      libId: v.libId, kind: v.kind,
+      times: v.times.slice(), everyN: v.everyN,
+      name: g("cName"), dose: g("cDose"), reason: g("cReason"),
+      doctor: g("cDoctor"), notes: g("cNotes"),
+      startDate: startF.get(), endDate: endF.get(),
+      pickedName: v.pickedName || ""
+    };
+  }
+  if(!editing){
+    const form0 = $("#cForm", root);
+    form0.addEventListener("input", snapDraft);
+    form0.addEventListener("change", snapDraft);
+    const clr = $("#draftClear", root);
+    if(clr) clr.addEventListener("click", () => {
+      courseDraft = null;
+      go("/home/course/new", true);
+      render();
+      toast("Форма очищена");
+    });
+  }
 
   /* --- выбор из библиотеки --- */
   function showPicked(it, shownName){
@@ -509,7 +564,8 @@ export function screenCourseForm(root, params){
       </div>`;
     if(pa) pa.hidden = true;
     $("#pickAgain", root).addEventListener("click", () => {
-      v.libId = null;
+      v.libId = null; v.pickedName = "";
+      snapDraft();
       $("#libLink", root).textContent = "";
       showPicked(null);
       const inp = $("#pickSearch", root);
@@ -533,22 +589,14 @@ export function screenCourseForm(root, params){
     fillDosePresets(it);
     // Автоподстановка дозы: если поле пустое, подставляем первую дозировку
     const dose = $("#cDose", root);
-    if(!dose.value.trim()){
-      const unit = (it.forms && it.forms[0]) || "";
-      const d = (it.doses && it.doses[0]) || "";
-      if(d || unit){
-        const word = /табл/.test(unit) ? "1 таблетка" :
-                     /капсул/.test(unit) ? "1 капсула" :
-                     /пакет|порош/.test(unit) ? "1 пакетик" :
-                     /спрей|капл/.test(unit) ? "" : "";
-        dose.value = [word, d].filter(Boolean).join(" ") || unit;
-      }
-    }
+    if(!dose.value.trim()) dose.value = doseHint(it);
     if(it.kind === "procedure"){
       const s = $("#step1", root);
       if(s) s.classList.add("done");
     }
+    v.pickedName = shown;
     showPicked(it, shown);
+    snapDraft();
     toast("Выбрано: " + shown);
   }
 
@@ -573,8 +621,10 @@ export function screenCourseForm(root, params){
           $("#useTyped", root).addEventListener("click", () => {
             $("#cName", root).value = qq;
             v.libId = null;
+            v.pickedName = "";
             $("#libLink", root).textContent = "Записано как своё название";
             box.innerHTML = ""; pick.value = "";
+            snapDraft();
             toast("Название записано");
             $("#cDose", root).focus();
           });
@@ -611,14 +661,12 @@ export function screenCourseForm(root, params){
     if(!box) return;
     const doses = (it && it.doses) || [];
     if(!doses.length){ box.innerHTML = ""; return; }
-    const unit = (it.forms && it.forms[0]) || "";
-    const word = /табл/.test(unit) ? "1 таблетка" : /капсул/.test(unit) ? "1 капсула" : "";
     box.innerHTML = `<span class="hint" style="width:100%">Подставить дозировку:</span>` +
       doses.slice(0,8).map(d => `<button type="button" class="p" data-dp="${esc(d)}">${esc(d)}</button>`).join("");
     box.querySelectorAll("[data-dp]").forEach(b => {
       b.addEventListener("click", () => {
         const inp = $("#cDose", root);
-        inp.value = [word, b.dataset.dp].filter(Boolean).join(" ");
+        inp.value = doseHint(it, b.dataset.dp);
         inp.focus();
       });
     });
@@ -626,7 +674,7 @@ export function screenCourseForm(root, params){
 
   if(v.libId){
     const it = getItem(v.libId);
-    if(it){ fillDosePresets(it); if(!editing) showPicked(it); }
+    if(it){ fillDosePresets(it); if(!editing) showPicked(it, v.pickedName || it.name); }
   }
 
   /* --- переключатели --- */
@@ -634,6 +682,7 @@ export function screenCourseForm(root, params){
     const b = e.target.closest("[data-k]"); if(!b) return;
     v.kind = b.dataset.k;
     root.querySelectorAll("#cKind .chip").forEach(c => c.classList.toggle("on", c.dataset.k === v.kind));
+    snapDraft();
   });
 
   root.querySelector("#cTimes").addEventListener("click", e => {
@@ -643,12 +692,14 @@ export function screenCourseForm(root, params){
     else v.times.push(id);
     b.classList.toggle("on", v.times.includes(id));
     b.setAttribute("aria-pressed", String(v.times.includes(id)));
+    snapDraft();
   });
 
   root.querySelector("#cFreq").addEventListener("click", e => {
     const b = e.target.closest("[data-n]"); if(!b) return;
     v.everyN = Number(b.dataset.n);
     root.querySelectorAll("#cFreq .chip").forEach(c => c.classList.toggle("on", Number(c.dataset.n) === v.everyN));
+    snapDraft();
   });
 
   /* --- сохранение --- */
@@ -693,6 +744,7 @@ export function screenCourseForm(root, params){
         createdAt: new Date().toISOString()
       }, payload);
       state.data.courses.push(c);
+      courseDraft = null;
       save(true); toast("Назначение добавлено");
       go("/home/course/" + encodeURIComponent(c.id), true);
     }

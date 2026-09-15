@@ -15,7 +15,7 @@
    не перехватываются.
    =================================================================== */
 
-const CACHE = "healthbook-v2";
+const CACHE = "healthbook-v3";
 
 const CORE = [
   "./",
@@ -28,6 +28,7 @@ const CORE = [
   "./js/ui.js",
   "./js/library.js",
   "./js/home.js",
+  "./js/kits.js",
   "./js/diary.js",
   "./js/report.js",
   "./js/settings.js",

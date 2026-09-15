@@ -424,7 +424,17 @@ export function bindDateField(root, id, opts={}){
   };
 }
 
-/* ---------- Степпер: крупный ввод чисел без клавиатуры ---------- */
+/* ===================================================================
+   Степпер — три способа задать число, чтобы ни один не был тупиком:
+
+   1. Кнопки «−» и «+» — точная подстройка на один шаг.
+      При удержании разгоняются: сначала медленно, потом всё быстрее.
+   2. Протягивание пальцем по цифре влево-вправо — «крутилка».
+      Чем быстрее движение, тем крупнее шаг: спокойным движением
+      подбираешь десятые, резким — проезжаешь десятки.
+   3. Нажатие на цифру — обычный ввод с клавиатуры.
+      Спасение для случая «вес 70 по умолчанию, а нужно 100».
+   =================================================================== */
 export function stepper(opts){
   /* opts: {value, min, max, step, unit, decimals, presets:[], onChange} */
   const st = {
@@ -433,35 +443,61 @@ export function stepper(opts){
     decimals: opts.decimals ?? 0,
     el: null
   };
-  const fmt = v => st.decimals ? v.toFixed(st.decimals) : String(Math.round(v));
+  const fmt = v => (st.decimals ? v.toFixed(st.decimals) : String(Math.round(v))).replace(".", ",");
 
   const wrap = document.createElement("div");
   wrap.innerHTML = `
     <div class="stepper">
       <button type="button" data-d="-1" aria-label="Уменьшить">−</button>
-      <div class="val"><span class="v">${fmt(st.value)}</span><span class="u">${esc(opts.unit||"")}</span></div>
+      <div class="val" role="button" tabindex="0"
+           aria-label="Значение ${fmt(st.value)}. Нажмите, чтобы ввести с клавиатуры, или потяните влево-вправо">
+        <span class="v">${fmt(st.value)}</span>
+        <span class="u">${esc(opts.unit || "")}</span>
+      </div>
       <button type="button" data-d="1" aria-label="Увеличить">+</button>
     </div>
+    <div class="stephint">Потяните по цифре или нажмите на неё, чтобы ввести</div>
     ${opts.presets && opts.presets.length ? `<div class="presets">${
       opts.presets.map(p => `<button type="button" class="p" data-p="${p.v}">${esc(p.t)}</button>`).join("")
     }</div>` : ""}`;
 
-  const vEl = wrap.querySelector(".v");
+  const valEl = wrap.querySelector(".val");
+
   const set = v => {
+    if(!isFinite(v)) return;
     v = Math.min(st.max, Math.max(st.min, v));
     v = Math.round(v / st.step) * st.step;
     st.value = Number(v.toFixed(st.decimals));
-    vEl.textContent = fmt(st.value);
+    // Ищем узел каждый раз: после ввода с клавиатуры содержимое подменяется
+    const vEl = valEl.querySelector(".v");
+    if(vEl) vEl.textContent = fmt(st.value);
+    valEl.setAttribute("aria-label",
+      "Значение " + fmt(st.value) + ". Нажмите, чтобы ввести с клавиатуры, или потяните влево-вправо");
     if(opts.onChange) opts.onChange(st.value);
   };
 
-  let holdTimer = null, holdInt = null;
+  /* ---------- 1. Кнопки с разгоном при удержании ---------- */
+  let holdTimer = null, holdRaf = null;
   const startHold = d => {
+    const t0 = Date.now();
+    let last = 0;
     holdTimer = setTimeout(() => {
-      holdInt = setInterval(() => set(st.value + d * st.step), 80);
-    }, 480);
+      const tick = () => {
+        const held = Date.now() - t0;
+        // Интервал между шагами: 120 мс в начале, к 4 секундам — 16 мс
+        const interval = held < 1200 ? 120 : held < 2600 ? 55 : 16;
+        const now = Date.now();
+        if(now - last >= interval){ set(st.value + d * st.step); last = now; }
+        holdRaf = requestAnimationFrame(tick);
+      };
+      tick();
+    }, 400);
   };
-  const stopHold = () => { clearTimeout(holdTimer); clearInterval(holdInt); };
+  const stopHold = () => {
+    clearTimeout(holdTimer);
+    if(holdRaf) cancelAnimationFrame(holdRaf);
+    holdRaf = null;
+  };
 
   wrap.querySelectorAll("[data-d]").forEach(b => {
     const d = Number(b.dataset.d);
@@ -469,8 +505,109 @@ export function stepper(opts){
     b.addEventListener("pointerdown", () => startHold(d));
     ["pointerup","pointerleave","pointercancel"].forEach(ev => b.addEventListener(ev, stopHold));
   });
+
   wrap.querySelectorAll("[data-p]").forEach(b => {
     b.addEventListener("click", () => set(Number(b.dataset.p)));
+  });
+
+  /* ---------- 2. Протягивание пальцем ---------- */
+  const PX_PER_STEP = 7;      // сколько пикселей на один шаг при спокойном движении
+  let dragging = false, moved = 0, acc = 0, lastX = 0, lastT = 0, downT = 0, pid = null;
+
+  valEl.addEventListener("pointerdown", e => {
+    if(editing) return;
+    dragging = true; moved = 0; acc = 0;
+    lastX = e.clientX; lastT = e.timeStamp; downT = e.timeStamp; pid = e.pointerId;
+    try{ valEl.setPointerCapture(pid); }catch(err){}
+    valEl.classList.add("dragging");
+  });
+
+  valEl.addEventListener("pointermove", e => {
+    if(!dragging) return;
+    const dx = e.clientX - lastX;
+    const dt = Math.max(1, e.timeStamp - lastT);
+    lastX = e.clientX; lastT = e.timeStamp;
+    moved += Math.abs(dx);
+    if(!dx) return;
+
+    // Скорость в пикселях за миллисекунду → множитель шага
+    const speed = Math.abs(dx) / dt;
+    const mult = speed > 1.6 ? 16 : speed > 0.9 ? 6 : speed > 0.4 ? 2 : 1;
+
+    acc += dx * mult;
+    const steps = Math.trunc(acc / PX_PER_STEP);
+    if(steps){
+      acc -= steps * PX_PER_STEP;
+      set(st.value + steps * st.step);
+    }
+    e.preventDefault();
+  });
+
+  const endDrag = e => {
+    if(!dragging) return;
+    dragging = false;
+    valEl.classList.remove("dragging");
+    try{ valEl.releasePointerCapture(pid); }catch(err){}
+    // Короткое нажатие почти без смещения — это тап, а не протягивание
+    const quick = (e.timeStamp - downT) < 400 && moved < 10;
+    if(quick) openInput();
+  };
+  ["pointerup","pointercancel"].forEach(ev => valEl.addEventListener(ev, endDrag));
+
+  /* ---------- 3. Ввод с клавиатуры ---------- */
+  let editing = false;
+  function openInput(){
+    if(editing) return;
+    editing = true;
+    const inp = document.createElement("input");
+    inp.type = "text";
+    inp.inputMode = st.decimals ? "decimal" : "numeric";
+    inp.className = "valinput";
+    inp.value = fmt(st.value);
+    inp.setAttribute("aria-label", "Введите значение от " + st.min + " до " + st.max);
+
+    const hold = valEl.innerHTML;
+    valEl.innerHTML = "";
+    valEl.appendChild(inp);
+
+    const close = commit => {
+      if(!editing) return;
+      editing = false;
+      if(commit){
+        const raw = inp.value.replace(",", ".").replace(/[^\d.\-]/g, "");
+        const num = parseFloat(raw);
+        valEl.innerHTML = hold;
+        rebind();
+        if(isFinite(num)){
+          if(num < st.min || num > st.max)
+            toast("Допустимо от " + fmt(st.min) + " до " + fmt(st.max));
+          set(num);
+        }
+      }else{
+        valEl.innerHTML = hold;
+        rebind();
+        set(st.value);
+      }
+    };
+
+    inp.addEventListener("keydown", e => {
+      // stopPropagation обязателен: иначе Enter всплывёт на родителя,
+      // тот поймает его своим обработчиком и откроет поле ввода заново.
+      if(e.key === "Enter"){ e.preventDefault(); e.stopPropagation(); close(true); }
+      if(e.key === "Escape"){ e.preventDefault(); e.stopPropagation(); close(false); }
+    });
+    inp.addEventListener("blur", () => close(true));
+    inp.focus();
+    inp.select();
+  }
+
+  function rebind(){ set(st.value); }
+
+  valEl.addEventListener("keydown", e => {
+    if(e.target !== valEl) return;      // события из поля ввода сюда не относятся
+    if(e.key === "Enter" || e.key === " "){ e.preventDefault(); openInput(); }
+    if(e.key === "ArrowRight" || e.key === "ArrowUp"){ e.preventDefault(); set(st.value + st.step); }
+    if(e.key === "ArrowLeft" || e.key === "ArrowDown"){ e.preventDefault(); set(st.value - st.step); }
   });
 
   st.el = wrap;

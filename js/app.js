@@ -6,6 +6,7 @@ import { state, prefs, load, save, requestPersistence } from "./store.js";
 import { route, render, go, bindHeader, updateNet, toast, $ } from "./ui.js";
 import { loadBuiltinLibrary, screenLibrary, screenLibraryItem, screenLibraryForm } from "./library.js";
 import { screenHome, screenCourse, screenCourseForm, screenArchive } from "./home.js";
+import { screenKits, screenKit } from "./kits.js";
 import { screenDiary, screenMetric, screenMetricAdd, screenDayNote } from "./diary.js";
 import { screenReport } from "./report.js";
 import { screenSettings, showDisclaimer } from "./settings.js";
@@ -14,6 +15,8 @@ import { screenSettings, showDisclaimer } from "./settings.js";
    Порядок важен: более конкретные адреса объявляются раньше. */
 route("/home",                 screenHome);
 route("/home/archive",         screenArchive);
+route("/home/kits",            screenKits);
+route("/home/kits/:id",        screenKit);
 route("/home/course/new",      screenCourseForm);
 route("/home/course/edit/:id", screenCourseForm);
 route("/home/course/:id",      screenCourse);

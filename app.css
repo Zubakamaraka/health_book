@@ -336,9 +336,29 @@ mark{
 .stepper .val{
   flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center;
   font-variant-numeric:tabular-nums;
+  /* Протягивание пальцем по цифре не должно листать страницу */
+  touch-action:none; user-select:none; -webkit-user-select:none;
+  cursor:ew-resize; border-radius:10px; padding:.1rem .3rem;
+  border:2px dashed transparent;
+}
+.stepper .val:active, .stepper .val.dragging{
+  background:var(--accent-soft); border-color:var(--accent);
 }
 .stepper .val .v{font-size:1.75rem; font-weight:800; font-family:Georgia,serif; line-height:1.1;}
 .stepper .val .u{font-size:.78rem; color:var(--muted); font-weight:700;}
+
+/* Поле ввода, которое подменяет цифру при нажатии на неё */
+.stepper .valinput{
+  width:100%; min-height:2.6rem; text-align:center;
+  font-family:Georgia,serif; font-size:1.6rem; font-weight:800;
+  border:2px solid var(--accent); border-radius:10px;
+  background:var(--card); color:var(--ink); padding:.1rem .3rem;
+  font-variant-numeric:tabular-nums;
+}
+.stephint{
+  font-size:.78rem; color:var(--muted); text-align:center;
+  margin:-.1rem 0 .35rem;
+}
 
 .presets{display:flex; flex-wrap:wrap; gap:.4rem; margin-bottom:.3rem;}
 .presets .p{
@@ -359,6 +379,17 @@ mark{
 .item .top{display:flex; align-items:baseline; gap:.5rem;}
 .item .nm{font-weight:800; font-size:1.06rem; flex:1; min-width:0;}
 .item .sub{color:var(--muted); font-size:.88rem; margin-top:.15rem;}
+/* Бытовая памятка «от чего» — то, что человек ищет глазами в первую очередь */
+.item .tldr{
+  color:var(--accent-2); font-weight:700; font-size:.94rem; margin-top:.18rem;
+}
+.tldr-big{
+  display:flex; align-items:flex-start; gap:.5rem;
+  border:2px solid var(--accent); background:var(--accent-soft);
+  border-radius:var(--radius); padding:.65rem .8rem; margin-bottom:.2rem;
+  font-weight:700; color:var(--accent);
+}
+.tldr-big .ic{font-size:1.15rem; line-height:1.2;}
 .item .meta{display:flex; flex-wrap:wrap; gap:.35rem; margin-top:.4rem;}
 
 .tag{
@@ -503,6 +534,8 @@ mark{
   display:flex; gap:.6rem; align-items:flex-start;
 }
 .banner .bi{font-size:1.3rem; line-height:1;}
+.banner.warnbanner{border-color:var(--warn); background:var(--warn-soft); color:var(--warn);}
+.banner.warnbanner b{color:inherit;}
 .banner .bt{flex:1; font-size:.92rem; font-weight:600;}
 
 .profile-switch{

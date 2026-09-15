@@ -132,7 +132,8 @@ function buildReportHtml(){
   let html = `
     <div class="pr-h1">Книга здоровья — выписка</div>
     <div class="pr-sub">
-      ${esc(prof.name)}${prof.birthYear ? `, ${esc(String(prof.birthYear))} г. р.` : ""}<br>
+      ${esc(prof.name)}${prof.birthYear ? `, ${esc(String(prof.birthYear))} г. р.` : ""}${
+        prof.sex ? `, пол: ${prof.sex === "m" ? "мужской" : "женский"}` : ""}<br>
       Период: ${esc(fmtDate(from))} — ${esc(fmtDate(to))} (${days} ${plural(days,"день","дня","дней")})<br>
       Документ сформирован ${esc(fmtDate(todayISO()))}
     </div>`;

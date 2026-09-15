@@ -95,6 +95,28 @@ function wordStarts(s, q){
   return s.split(/[^a-zа-я0-9]+/).some(w => w && w.startsWith(q));
 }
 
+/* Поиск по бытовой памятке: человек набирает «от давления», а в памятке
+   написано «назначают при повышенном давлении». Поэтому предлоги
+   выбрасываются, а слова сравниваются без учёта окончаний. */
+const STOPWORDS = new Set(["от","при","для","из","за","на","в","и","с","по","к","до","у"]);
+
+function wordsOf(s){ return soft(s).split(/[^a-zа-я0-9]+/).filter(Boolean); }
+
+function stemEq(a, b){
+  if(a === b) return true;
+  if(a.length >= 4 && b.startsWith(a)) return true;
+  if(b.length >= 4 && a.startsWith(b)) return true;
+  const sa = skel(a), sb = skel(b);
+  return sa.length >= 3 && sa === sb;
+}
+
+function memoMatch(hay, q){
+  const qw = wordsOf(q).filter(w => !STOPWORDS.has(w) && w.length >= 3);
+  if(!qw.length) return false;
+  const hw = wordsOf(hay);
+  return qw.every(w => hw.some(h => stemEq(w, h)));
+}
+
 function byName(a, b){ return String(a.name).localeCompare(String(b.name), "ru"); }
 
 /* Результат поиска:
@@ -128,11 +150,19 @@ export function searchItems(query, opts = {}){
       if(t !== it.name) score += 1;         // при равенстве основное название чуть выше
       if(best === null || score < best.score) best = {score, title:t};
     }
-    if(!best){
-      const extra = soft([it.inn, it.group].filter(Boolean).join(" • "));
-      if(extra.includes(q)) best = {score:60, title:it.name};
+    let viaMemo = false;
+    if(!best && it.tldr && memoMatch(it.tldr, q)){
+      best = {score:50, title:it.name}; viaMemo = true;
     }
-    if(best) out.push({item:it, title:best.title, alias:best.title !== it.name, q, fuzzy:false, score:best.score});
+    if(!best){
+      // Технические поля ищем буквально: сравнение «без окончаний» здесь
+      // сработало бы и на опечатке, а её лучше показать отдельной подсказкой.
+      const tech = soft([it.inn, it.group].filter(Boolean).join(" • "));
+      if(tech.includes(q)) best = {score:60, title:it.name};
+      else if(it.purpose && memoMatch(it.purpose, q)) best = {score:65, title:it.name};
+    }
+    if(best) out.push({item:it, title:best.title, alias:best.title !== it.name,
+                       q, fuzzy:false, score:best.score, viaMemo});
   }
 
   if(out.length){
@@ -176,6 +206,50 @@ export function hl(text, q){
   const i = soft(t).indexOf(q);
   if(i < 0) return esc(t);
   return esc(t.slice(0, i)) + "<mark>" + esc(t.slice(i, i + q.length)) + "</mark>" + esc(t.slice(i + q.length));
+}
+
+/* Подсветка отдельных слов — для памятки, где совпадают не подстроки,
+   а слова с другими окончаниями. */
+export function hlWords(text, q){
+  const qw = wordsOf(q).filter(w => !STOPWORDS.has(w) && w.length >= 3);
+  if(!qw.length) return esc(text);
+  return String(text || "").split(/([^a-zA-Zа-яА-ЯёЁ0-9]+)/).map(part => {
+    if(!/[a-zA-Zа-яА-ЯёЁ0-9]/.test(part)) return esc(part);
+    const lw = soft(part);
+    return qw.some(w => stemEq(w, lw)) ? "<mark>" + esc(part) + "</mark>" : esc(part);
+  }).join("");
+}
+
+/* Действующие вещества позиции по отдельности.
+   У комбинированных препаратов в поле записано несколько через запятую —
+   именно так ловится случай «Терафлю и Цитрамон, а парацетамол один и тот же».
+   Ключ строится по согласным, чтобы падежи не мешали сравнению. */
+export function innParts(inn){
+  return String(inn || "")
+    .split(/[,;+/]| и /)
+    .map(x => x.replace(/\(.*?\)/g, "").trim())
+    .filter(x => x.length >= 4)
+    .map(x => ({ name: x, key: skel(x) }))
+    .filter(x => x.key.length >= 3);
+}
+
+/* Подсказка дозы: «1 таблетка 10 мг», но не «1 таблетка 1 таблетка».
+   Слово «таблетка» дописывается только к настоящей граммовке. */
+export function doseWord(it){
+  const form = (it && it.forms && it.forms[0]) || "";
+  if(/табл/i.test(form)) return "1 таблетка";
+  if(/капсул/i.test(form)) return "1 капсула";
+  if(/пакет|порош/i.test(form)) return "1 пакетик";
+  return "";
+}
+export function isStrength(d){
+  return /\d/.test(String(d||"")) && /(мг|мкг|\bг\b|мл|ме\b|%|ед)/i.test(String(d||""));
+}
+export function doseHint(it, dose){
+  const d = dose != null ? dose : ((it && it.doses && it.doses[0]) || "");
+  if(!d) return (it && it.forms && it.forms[0]) || "";
+  const w = doseWord(it);
+  return (w && isStrength(d)) ? (w + " " + d) : d;
 }
 
 /* ---------- Короткое описание позиции ---------- */
@@ -299,6 +373,7 @@ export function screenLibrary(root){
     const sub = resultSubtitle(r);
     return `<button class="item" type="button" data-id="${esc(it.id)}">
       <div class="top"><span class="nm">${it.kind === "procedure" ? "🩺 " : ""}${hl(r.title, r.q)}</span></div>
+      ${it.tldr ? `<div class="tldr">${r.viaMemo ? hlWords(it.tldr, r.q) : esc(it.tldr)}</div>` : ""}
       ${sub ? `<div class="sub">${hl(sub, r.q)}</div>` : ""}
       <div class="meta">
         ${cat ? `<span class="tag">${cat.icon} ${esc(cat.name)}</span>` : ""}
@@ -326,6 +401,8 @@ export function screenLibraryItem(root, params){
   const cached = state.data.wikiCache[wikiKeyFor(it)];
 
   root.innerHTML = formHead(it.name) + `
+    ${it.tldr ? `<div class="tldr-big"><span class="ic" aria-hidden="true">💡</span>
+       <span>${esc(it.tldr)}</span></div>` : ""}
     <div class="panel">
       <div class="meta mb">
         ${cat ? `<span class="tag">${cat.icon} ${esc(cat.name)}</span>` : ""}
@@ -420,6 +497,7 @@ export function screenLibraryForm(root, params){
 
   const val = {
     name: src ? src.name || "" : (queryName() || ""),
+    tldr: src ? src.tldr || "" : "",
     inn:  src ? src.inn  || "" : "",
     brands: src ? (src.brands || []).join(", ") : "",
     cat:  src ? src.cat  || "" : "",
@@ -453,6 +531,12 @@ export function screenLibraryForm(root, params){
           <label for="fName">Название <span class="req">*</span></label>
           <div class="sub">Так, как написано на упаковке или сказал врач.</div>
           <input type="text" id="fName" value="${esc(val.name)}" required placeholder="Например: Амосин">
+        </div>
+
+        <div class="field">
+          <label for="fTldr">Коротко: от чего</label>
+          <div class="sub">Как говорят в быту: «от головы», «при вздутии». Видно прямо в списке и ищется поиском.</div>
+          <input type="text" id="fTldr" value="${esc(val.tldr)}" placeholder="например: от головы">
         </div>
 
         <div class="field">
@@ -650,6 +734,7 @@ export function screenLibraryForm(root, params){
     set("fGroup", data.group);
     set("fForms", (data.forms || []).join(", "));
     set("fPurpose", data.purpose);
+    set("fTldr", data.tldr);
     if(data.cat && !$("#fCat", root).value) $("#fCat", root).value = data.cat;
     toast("Поля заполнены — проверьте их");
   }
@@ -695,6 +780,7 @@ export function screenLibraryForm(root, params){
       const set = (id, value) => { const el = $("#" + id, root); if(el && value && !el.value.trim()) el.value = value; };
       set("fInn", it.inn);
       set("fGroup", it.group);
+      set("fTldr", it.tldr);
       set("fForms", (it.forms || []).join(", "));
       set("fDoses", (it.doses || []).join(", "));
       if(it.rx && !v.rx){ v.rx = true; rxBtn.classList.add("on"); rxBtn.setAttribute("aria-pressed","true"); }
@@ -718,6 +804,7 @@ export function screenLibraryForm(root, params){
     const payload = {
       kind: v.kind,
       name,
+      tldr: gv("fTldr"),
       inn: isDrug ? gv("fInn") : "",
       brands: isDrug ? splitList(gv("fBrands")) : [],
       group: isDrug ? gv("fGroup") : "",
@@ -734,12 +821,13 @@ export function screenLibraryForm(root, params){
     if(editing && src.builtin){
       state.data.libraryEdits[src.id] = payload;
       save(true); toast("Сохранено");
-      go("/library/item/" + encodeURIComponent(src.id), true);
+      // Назад, а не подмена адреса — иначе в истории два одинаковых экрана
+      back("/library/item/" + encodeURIComponent(src.id));
     }else if(editing){
       const i = state.data.libraryCustom.findIndex(x => x.id === src.id);
       state.data.libraryCustom[i] = Object.assign({}, state.data.libraryCustom[i], payload);
       save(true); toast("Сохранено");
-      go("/library/item/" + encodeURIComponent(src.id), true);
+      back("/library/item/" + encodeURIComponent(src.id));
     }else{
       const item = Object.assign({id: uid("li"), createdAt: new Date().toISOString()}, payload);
       state.data.libraryCustom.push(item);
@@ -849,7 +937,11 @@ async function wikiFill(name, forcedTitle){
   const hay = (group + " " + text).toLowerCase();
   for(const [id, re] of CAT_HINTS){ if(re.test(hay)){ cat = id; break; } }
 
-  return { title: sum.title || title, group, forms, purpose, inn, cat };
+  // Короткая памятка: берём из найденного раздела библиотеки
+  const catName = (CATEGORIES.find(c => c.id === cat) || {}).name || "";
+  const tldr = catName ? catName.toLowerCase() : "";
+
+  return { title: sum.title || title, group, forms, purpose, inn, cat, tldr };
 }
 
 /* ===================================================================

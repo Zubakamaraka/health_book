@@ -17,7 +17,7 @@
         это другое хранилище.
    =================================================================== */
 
-export const APP_VERSION = "1.1.0";
+export const APP_VERSION = "1.2.0";
 export const SCHEMA_VERSION = 1;
 
 const KEY       = "healthbook.data";
@@ -48,7 +48,7 @@ function emptyData(){
   return {
     schemaVersion: SCHEMA_VERSION,
     createdAt: new Date().toISOString(),
-    profiles: [{ id:pid, name:"Мой профиль", birthYear:null, note:"" }],
+    profiles: [{ id:pid, name:"Мой профиль", birthYear:null, sex:"", note:"" }],
     activeProfileId: pid,
 
     /* Библиотека */
@@ -59,6 +59,10 @@ function emptyData(){
 
     /* Назначения (курсы приёма) */
     courses: [],
+
+    /* Свои наборы: «то, что мы обычно покупаем при простуде» и т. п.
+       Составляет их сам пользователь — приложение ничего не советует. */
+    kits: [],
 
     /* Отметки приёма: intake["YYYY-MM-DD"][courseId] = {morning:true,...} */
     intake: {},
@@ -161,11 +165,17 @@ function normalize(d){
     if(d[k] === undefined) d[k] = base[k];
   }
   if(!Array.isArray(d.profiles) || !d.profiles.length) d.profiles = base.profiles;
+  // Поля, появившиеся в новых версиях, добавляются молча и ничего не затирают
+  d.profiles.forEach(p => {
+    if(p.sex === undefined) p.sex = "";
+    if(p.birthYear === undefined) p.birthYear = null;
+    if(p.note === undefined) p.note = "";
+  });
   if(!d.activeProfileId || !d.profiles.some(p=>p.id===d.activeProfileId))
     d.activeProfileId = d.profiles[0].id;
   d.meta = Object.assign({}, base.meta, d.meta||{});
   d.meta.appVersion = APP_VERSION;
-  for(const k of ["libraryCustom","courses","measurements","dayNotes","libraryHidden"]){
+  for(const k of ["libraryCustom","courses","measurements","dayNotes","libraryHidden","kits"]){
     if(!Array.isArray(d[k])) d[k] = [];
   }
   for(const k of ["libraryEdits","intake","wikiCache"]){
@@ -252,7 +262,7 @@ export function setActiveProfile(id){
   if(state.data.profiles.some(p=>p.id===id)){ state.data.activeProfileId = id; save(); }
 }
 export function addProfile(name){
-  const p = { id:uid("pr"), name:(name||"Профиль").trim(), birthYear:null, note:"" };
+  const p = { id:uid("pr"), name:(name||"Профиль").trim(), birthYear:null, sex:"", note:"" };
   state.data.profiles.push(p); save(); return p;
 }
 export function removeProfile(id){

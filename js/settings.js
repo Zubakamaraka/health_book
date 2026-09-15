@@ -155,11 +155,15 @@ function drawProfiles(box){
       <div class="top">
         <span class="nm">${esc(p.name)}${p.id === d.activeProfileId ? " ✓" : ""}</span>
       </div>
-      <div class="sub">${p.birthYear ? esc(String(p.birthYear)) + " г. р." : "год рождения не указан"}</div>
+      <div class="sub">${[
+          p.birthYear ? esc(String(p.birthYear)) + " г. р." : "год рождения не указан",
+          sexName(p.sex)
+        ].filter(Boolean).join(" · ")}</div>
       <div class="btn-row mt">
         ${p.id !== d.activeProfileId ? `<button class="btn quiet" data-use="${esc(p.id)}" style="min-height:2.5rem">Выбрать</button>` : ""}
         <button class="btn quiet" data-ren="${esc(p.id)}" style="min-height:2.5rem">Имя</button>
         <button class="btn quiet" data-year="${esc(p.id)}" style="min-height:2.5rem">Год</button>
+        <button class="btn quiet" data-sex="${esc(p.id)}" style="min-height:2.5rem">Пол</button>
         ${d.profiles.length > 1 ? `<button class="btn danger" data-del="${esc(p.id)}" style="min-height:2.5rem">Удалить</button>` : ""}
       </div>
     </div>`).join("");
@@ -182,6 +186,12 @@ function drawProfiles(box){
     p.birthYear = (n >= 1900 && n <= new Date().getFullYear()) ? n : null;
     save(true); render();
   }));
+  box.querySelectorAll("[data-sex]").forEach(b => b.addEventListener("click", async () => {
+    const p = state.data.profiles.find(x => x.id === b.dataset.sex);
+    const v = await pickSex(p.sex);
+    if(v === null) return;
+    p.sex = v; save(true); render();
+  }));
   box.querySelectorAll("[data-del]").forEach(b => b.addEventListener("click", async () => {
     const p = state.data.profiles.find(x => x.id === b.dataset.del);
     const ok = await confirmDialog({title:`Удалить профиль «${p.name}»?`,
@@ -190,6 +200,35 @@ function drawProfiles(box){
     if(!ok) return;
     removeProfile(p.id); toast("Профиль удалён"); render();
   }));
+}
+
+export function sexName(sex){
+  return sex === "m" ? "мужской" : sex === "f" ? "женский" : "";
+}
+
+/* Выбор пола крупными кнопками */
+function pickSex(current){
+  return new Promise(resolve => {
+    const b = document.createElement("div");
+    b.className = "modal-back";
+    b.innerHTML = `<div class="modal" role="dialog" aria-modal="true">
+      <h2>Пол</h2>
+      <p class="hint mb">Нужен только для шапки отчёта врачу.</p>
+      <div class="btn-col">
+        <button class="btn wide ${current === "m" ? "primary" : ""}" data-v="m">Мужской</button>
+        <button class="btn wide ${current === "f" ? "primary" : ""}" data-v="f">Женский</button>
+        <button class="btn quiet wide" data-v="">Не указывать</button>
+      </div>
+      <div class="mt"><button class="btn quiet wide" data-cancel>Отмена</button></div>
+    </div>`;
+    b.addEventListener("click", e => {
+      if(e.target === b || e.target.closest("[data-cancel]")){ b.remove(); resolve(null); return; }
+      const t = e.target.closest("[data-v]");
+      if(!t) return;
+      b.remove(); resolve(t.dataset.v);
+    });
+    document.body.appendChild(b);
+  });
 }
 
 /* ---------- Скрытые позиции библиотеки ---------- */
